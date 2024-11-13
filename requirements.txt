@@ -1,0 +1,14 @@
+dask
+fiona
+numpy
+pandas
+xarray
+netcdf4
+rasterio
+geopandas
+rioxarray
+matplotlib
+rasterstats
+scikit-learn
+scikit-image
+importlib-resources
