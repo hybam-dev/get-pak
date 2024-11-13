@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import dask
@@ -220,9 +221,12 @@ class Raster:
 
         @return: tile_id (str) and ref (dict) containing the GDAL information
         """
-        img_parent_name = os.path.basename(Path(img_path_str).parents[1])
-        sliced_ipn = img_parent_name.split('_') 
-        tile_id = sliced_ipn[5][1:]
+        # img_parent_name = os.path.basename(Path(img_path_str).parents[1])
+        # sliced_ipn = img_parent_name.split('_') 
+        # tile_id = sliced_ipn[5][1:]
+        match = re.search(r'T\d{2}[A-Z]{3}', img_path_str)
+        tile_id = match.group(0)[1:]
+        
         # Get GDAL information from the template file
         ref_data = gdal.Open(img_path_str)
         mtx = ref_data.ReadAsArray()
