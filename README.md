@@ -3,7 +3,7 @@
 
 GETpak aims to provide tools for Sentinel-2, Sentinel-3, GeoTIFF, NetCDF and vector data manipulation and validation.
 
-
+```plaintext
             _..._
           .'     '.      _
          /    .-""-\   _/ \ 
@@ -20,7 +20,7 @@ GETpak aims to provide tools for Sentinel-2, Sentinel-3, GeoTIFF, NetCDF and vec
   /  | || |  /-._/-._/                                            88
              \   `\  \                                            88
               `-._/._/
-                        
+```
 ### Setup
 ⚠️ GDAL is a requirement for the installation, therefore, 
 usage of a conda environment 
