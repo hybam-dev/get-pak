@@ -317,6 +317,14 @@ def spm_zhang2014(RedEdge1, a=362507, b=2.3222):
     spm = a * (RedEdge1 ** b)
     return spm
 
+# SPM Severo et JM (2024)
+def spm_severo(b665, b865):
+    condition = (b865 / b665) > 0.3
+    spm_high = 16.01 * np.exp(4.99 * b865 / b665)
+    spm_low = (2719.8 * b865) / (1 - (b865 / 21.1)) + 2.08
+    spm = np.where(condition, spm_high, spm_low)
+    return spm
+
 # Secchi disk depth
 # def secchi_lee():
 #     """
@@ -388,18 +396,28 @@ functions = {
         'units': 'mg/l'
     },
 
+    'SPM_Zhang': {
+        'function': spm_zhang2014,
+        'units': 'mg/l'
+    },
+
+    'SPM_Sev': {
+        'function': spm_severo,
+        'units': 'mg/l'
+    },
+
     'TURB_Dogliotti': {
-        'function': turb_dogliotti,
+        'function': spm_dogliotti,
         'units': 'FNU'
     },
 
     'TURB_Dogliotti_S2': {
-        'function': turb_dogliotti_S2,
+        'function': spm_dogliotti_S2,
         'units': 'FNU'
     },
 
     'TURB_Conde': {
-        'function': turb_conde,
+        'function': spm_conde,
         'units': 'NTU'
     }
 }
