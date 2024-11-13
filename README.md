@@ -15,11 +15,12 @@ GETpak aims to provide tools for Sentinel-2, Sentinel-3, GeoTIFF, NetCDF and vec
      ;-.-'|    \   |     88            88aaaaa          88        8b,dPPYba,  ,adPPYYba, 88   ,d8
     /   | \    _\  _\    88      88888 88"""""          88 aaaaaa 88P'    "8a ""     `Y8 88 ,a8"
     \__/'._;.  ==' ==\   Y8,        88 88               88 """""" 88       d8 ,adPPPPP88 8888[
-             \    \   |   Y8a.    .a88 88               88        88b,   ,a8" 88,    ,88 88`"Yba,
-             /    /   /    `"Y88888P"  88888888888      88        88`YbbdP"'  `"8bbdP"Y8 88   `Y8a
-             /-._/-._/                                            88
+    /|\  /|\ \    \   |   Y8a.    .a88 88               88        88b,   ,a8" 88,    ,88 88`"Yba,
+   / | \/ | \/    /   /    `"Y88888P"  88888888888      88        88`YbbdP"'  `"8bbdP"Y8 88   `Y8a
+  /  | || |  /-._/-._/                                            88
              \   `\  \                                            88
               `-._/._/
+                        
 ### Setup
 ⚠️ GDAL is a requirement for the installation, therefore, 
 usage of a conda environment 
