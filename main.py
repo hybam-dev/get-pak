@@ -29,8 +29,16 @@ if __name__ == '__main__':
     # | Present options |
     # '-----------------'
     parser = argparse.ArgumentParser()
+    
+    # I/O
+    parser.add_argument('-i', '--input', help='Input file/folder', type=str)
+    parser.add_argument('-o', '--output', help='Output directory', type=str)
+    # Pipeline mode
+    parser.add_argument('-gp', '--getpipe', help='Run in pipeline mode', action='store_true')
+    parser.add_argument('-tid', '--tileid', help='internal tile ID for L2B calculation', type=str)
+    # version
     parser.add_argument('-v', '--version', help='Displays current package version.', action='store_true')
-    parser.add_argument('-mg', help="Given a path, return GRS metadata", default='local', type=str)
+
     args = parser.parse_args().__dict__  # Converts the input arguments from Namespace() to dict
 
     print('User Input Arguments:')
@@ -47,10 +55,12 @@ if __name__ == '__main__':
     # '---------------'
     if args['version']:
         print(f'GET-Pak version: {getpak.__version__}')
-    elif args['mg']:
-        gpk_pipe.get_grs_metadict(args['mg'])
+
+    elif args['getpipe']:
+        gpk_pipe.run_l2b_algo(args)
+
     else:
-        print('No commands supplied, exiting.\n')
+        print('Exiting.\n')
 
     # ,------------------------------,
     # | End timers and report to log |

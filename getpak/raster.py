@@ -1125,6 +1125,12 @@ class GRS:
             INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
             logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
             self.log = u.create_log_handler(logfile)
+        
+        # Import CRS projection information from /data/s2_proj_ref.json
+        s2projdata = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
+        with s2projdata.open('rb') as fp:
+            byte_content = fp.read()
+        self.s2projgrid = json.loads(byte_content)
 
     @staticmethod
     def metadata(grs_file_entry):
@@ -1243,6 +1249,38 @@ class GRS:
         outdriver = gdal.GetDriverByName(gdal_driver_name)  # http://www.gdal.org/gdal_8h.html
 
         [cols, rows] = ndarray_data.shape
+
+        print(f'Writing output .tiff')
+        # GDT_Byte = 1, GDT_UInt16 = 2, GDT_UInt32 = 4, GDT_Int32 = 5, GDT_Float32 = 6,
+        # options=['COMPRESS=PACKBITS'] -> https://gdal.org/drivers/raster/gtiff.html#creation-options
+        outdata = outdriver.Create(output_img, rows, cols, 1, gdal.GDT_Float32, options=['COMPRESS=PACKBITS'])
+        # Write the array to the file, which is the original array in this example
+        outdata.GetRasterBand(1).WriteArray(ndarray_data)
+        # Set a no data value if required
+        outdata.GetRasterBand(1).SetNoDataValue(no_data)
+        # Georeference the image
+        outdata.SetGeoTransform(trans)
+        # Write projection information
+        outdata.SetProjection(proj)
+
+        # Closing the files
+        # https://gdal.org/tutorials/raster_api_tut.html#using-create
+        # data = None
+        outdata = None
+        self.log.info('')
+        pass
+
+    def internal_ref_param2tiff(self, ndarray_data, tile_id, output_img, no_data=0, gdal_driver_name="GTiff"):
+
+        # Gather information from the template file
+        ref_data = self.s2projgrid[tile_id]
+        trans = ref_data['trans']
+        proj = ref_data['proj']
+        # nodatav = 0 #data.GetNoDataValue()
+        # Create file using information from the template
+        outdriver = gdal.GetDriverByName(gdal_driver_name)  # http://www.gdal.org/gdal_8h.html
+
+        [cols, rows] = ref_data['cols'], ref_data['rows']
 
         print(f'Writing output .tiff')
         # GDT_Byte = 1, GDT_UInt16 = 2, GDT_UInt32 = 4, GDT_Int32 = 5, GDT_Float32 = 6,
