@@ -312,17 +312,18 @@ def spm_s3(Red, Nir2, cutoff_value=0.027, cutoff_delta=0.007, low_params=None, h
     spm = (1 - transition_coef) * low + transition_coef * high
     return spm
 
+# SPM hibrid
+def spm_severo(Red, Nir2):
+    if (Nir2 / Red) > 0.3:
+        spm = 16.01 * 2.71828 ^ (4.99 * Nir2 / Red)
+    else:
+        spm = (2719.8 * Nir2) / (1 - (Nir2 / 21.1)) + 2.08
+
+    return spm
+
 # SPM Zhang et al. (2014)
 def spm_zhang2014(RedEdge1, a=362507, b=2.3222):
     spm = a * (RedEdge1 ** b)
-    return spm
-
-# SPM Severo et JM (2024)
-def spm_severo(b665, b865):
-    condition = (b865 / b665) > 0.3
-    spm_high = 16.01 * np.exp(4.99 * b865 / b665)
-    spm_low = (2719.8 * b865) / (1 - (b865 / 21.1)) + 2.08
-    spm = np.where(condition, spm_high, spm_low)
     return spm
 
 # Secchi disk depth
@@ -393,16 +394,6 @@ functions = {
 
     'SPM_S3': {
         'function': spm_s3,
-        'units': 'mg/l'
-    },
-
-    'SPM_Zhang': {
-        'function': spm_zhang2014,
-        'units': 'mg/l'
-    },
-
-    'SPM_Sev': {
-        'function': spm_severo,
         'units': 'mg/l'
     },
 

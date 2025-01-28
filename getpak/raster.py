@@ -1,26 +1,21 @@
 import os
-import re
 import sys
 import json
 import dask
 import logging
 import rasterio
 import rasterio.mask
-import concurrent.futures
 import importlib_resources
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-import netCDF4 as nc
 import geopandas as gpd
 
 from osgeo import gdal
 from dask import delayed
 from pathlib import Path
 from datetime import datetime
-from skimage.draw import polygon
-from skimage.transform import resize
 from rasterstats import zonal_stats
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 
@@ -45,22 +40,7 @@ class Raster:
 
     s2proj_ref_builder(wd_image_tif)
         Given an input WD output water_mask.tif over the desires Sentinel-2 tile-grid system (ex: 20LLQ),
-        output the GDAL transformation, projection, rows and columns of the input image.        
-
-    shp_stats(tif_file, shp_poly, keep_spatial=True, statistics='count min mean max median std')
-        Given a single-band GeoTIFF file and a vector.shp return statistics inside the polygon.
-
-    extract_px(rasterio_rast, shapefile, rrs_dict, bands)
-        Given a dict of Rrs and a polygon, to extract the values of pixels from each band
-
-    sam(self, values, single=False)
-        Given a a set of pixels, uses the Spectral Angle Mapper to generate angle between the Rrs and the OWTs
-
-    classify_owt_px(self, rrs_dict, bands)
-        Function to classify the OWT of each pixel
-
-    classify_owt(self, rasterio_rast, shapefiles, rrs_dict, bands, min_px=6)
-        Function to classify the the OWT of pixels inside a shapefile (or a set of shapefiles)
+        output the GDAL transformation, projection, rows and columns of the input image.
 
     """
 
@@ -221,12 +201,9 @@ class Raster:
 
         @return: tile_id (str) and ref (dict) containing the GDAL information
         """
-        # img_parent_name = os.path.basename(Path(img_path_str).parents[1])
-        # sliced_ipn = img_parent_name.split('_') 
-        # tile_id = sliced_ipn[5][1:]
-        match = re.search(r'T\d{2}[A-Z]{3}', img_path_str)
-        tile_id = match.group(0)[1:]
-        
+        img_parent_name = os.path.basename(Path(img_path_str).parents[1])
+        sliced_ipn = img_parent_name.split('_') 
+        tile_id = sliced_ipn[5][1:]
         # Get GDAL information from the template file
         ref_data = gdal.Open(img_path_str)
         mtx = ref_data.ReadAsArray()
@@ -407,9 +384,9 @@ class Raster:
 
         return angle
 
-    def classify_owt_px(self, rrs_dict, B1=True):
+    def classify_owt_chla_px(self, rrs_dict, B1=True):
         """
-        Classify the OWT of each pixel
+        Classify the OWT of each pixel according to the Spyrakos et al. (2018) classes
 
         Parameters
         ----------
@@ -462,6 +439,52 @@ class Raster:
         class_px[nzero] = np.nanargmin(angles, axis=1) + 1
 
         return class_px, angles
+
+    def classify_owt_chla_shp(self, rasterio_rast, shapefiles, rrs_dict, B1=True, min_px=9):
+        """
+        Classify the OWT of pixels inside a shapefile (or a set of shapefiles) according to the Spyrakos et al. (2018)
+        classes
+
+        Parameters
+        ----------
+        rasterio_rast: a rasterio raster with the same configuration as the bands, open with rasterio.open
+        shapefiles: a polygon (or set of polygons), usually of waterbodies to be classified, opened as geometry
+            using fiona
+        rrs_dict: a xarray Dataset containing the Rrs bands
+        B1: boolean to use Band 1 when using Sentinel-2 data
+        min_px: minimum number of pixels in each polygon to operate the classification
+
+        Returns
+        -------
+        class_spt: an array, with the same size as the input bands, with the classified pixels
+        class_shp: an array with the same length as the shapefiles, with a OWT class for each polygon
+        """
+        # checking if B1 will be used in the classification
+        if B1:
+            bands = ['Rrs_B1', 'Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
+            mode = 'B1'
+        else:
+            bands = ['Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
+            mode = 'B2'
+        class_spt = np.zeros(rrs_dict[bands[0]].shape, dtype='int32')
+        class_shp = np.zeros((len(shapefiles)), dtype='int32')
+        for i, shape in enumerate(shapefiles):
+            values, slices, mask = self.extract_px(rasterio_rast, shape, rrs_dict, bands)
+            # Verifying if there are more pixels than the minimum
+            valid_pixels = np.isnan(values[0]) == False
+            if np.count_nonzero(valid_pixels) >= min_px:
+                angle = int(np.argmin(self._sam(values, mode=mode)) + 1)
+            else:
+                angle = int(0)
+
+            # classifying only the valid pixels inside the polygon
+            values = np.where(valid_pixels, angle, 0)
+            # adding to avoid replacing values of cropping by other polygons
+            class_spt[slices[0], slices[1]] += values.reshape(mask.shape)
+            # classification by polygon
+            class_shp[i] = angle
+
+        return class_spt.astype('uint8'), class_shp.astype('uint8')
 
     def classify_owt_spm_px(self, rrs_dict, B1=True):
         """
@@ -531,59 +554,14 @@ class Raster:
 
         return class_px, angles
 
-    def classify_owt_shp(self, rasterio_rast, shapefiles, rrs_dict, B1=True, min_px=9):
-        """
-        Classify the OWT of pixels inside a shapefile (or a set of shapefiles)
-
-        Parameters
-        ----------
-        rasterio_rast: a rasterio raster with the same configuration as the bands, open with rasterio.open
-        shapefiles: a polygon (or set of polygons), usually of waterbodies to be classified, opened as geometry
-            using fiona
-        rrs_dict: a xarray Dataset containing the Rrs bands
-        B1: boolean to use Band 1 when using Sentinel-2 data
-        min_px: minimum number of pixels in each polygon to operate the classification
-
-        Returns
-        -------
-        class_spt: an array, with the same size as the input bands, with the classified pixels
-        class_shp: an array with the same length as the shapefiles, with a OWT class for each polygon
-        """
-        # checking if B1 will be used in the classification
-        if B1:
-            bands = ['Rrs_B1', 'Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
-            mode = 'B1'
-        else:
-            bands = ['Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
-            mode = 'B2'
-        class_spt = np.zeros(rrs_dict[bands[0]].shape, dtype='int32')
-        class_shp = np.zeros((len(shapefiles)), dtype='int32')
-        for i, shape in enumerate(shapefiles):
-            values, slices, mask = self.extract_px(rasterio_rast, shape, rrs_dict, bands)
-            # Verifying if there are more pixels than the minimum
-            valid_pixels = np.isnan(values[0]) == False
-            if np.count_nonzero(valid_pixels) >= min_px:
-                angle = int(np.argmin(self._sam(values, mode=mode)) + 1)
-            else:
-                angle = int(0)
-
-            # classifying only the valid pixels inside the polygon
-            values = np.where(valid_pixels, angle, 0)
-            # adding to avoid replacing values of cropping by other polygons
-            class_spt[slices[0], slices[1]] += values.reshape(mask.shape)
-            # classification by polygon
-            class_shp[i] = angle
-
-        return class_spt.astype('uint8'), class_shp.astype('uint8')
-
-    def classify_owt_weights(self, class_px, angles, n=3, remove_classes=1):
+    def classify_owt_chla_weights(self, class_px, angles, n=3, remove_classes=1):
         """
         Attribute weights to the n-th most important OWTs, based on the spectral angle mapper
         The weights are used for calculating weighted means of the water quality parameters, in order to smooth the
         spatial differences between the pixels, and also to remove possible outliers generated by some models
         For more information on this approach, please refer to Moore et al. (2001) and Liu et al. (2021)
 
-        This function uses the results of classify_owt_px as input data
+        This function uses the results of classify_owt_chla_px as input data
 
         Parameters
         ----------
@@ -807,6 +785,17 @@ class Raster:
                     chla[index[0][out], index[1][out]] = np.nan
                     self.out[index[0][out], index[1][out]] += 1
 
+            classes = [14]
+            index = np.where(np.isin(class_owt_spt, classes))
+            if len(index[0] > 0):
+                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Rrs_B2'].values[index],
+                                            Green=rrs_dict['Rrs_B3'].values[index])
+                if limits:
+                    lims = [0.01, 50]
+                    out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    chla[index[0][out], index[1][out]] = np.nan
+                    self.out[index[0][out], index[1][out]] += 1
+
         else:
             chla = ifunc.chl_gons(Red=rrs_dict['Rrs_B4'].values, RedEdg1=rrs_dict['Rrs_B5'].values,
                                   RedEdg3=rrs_dict['Rrs_B7'].values)
@@ -822,10 +811,10 @@ class Raster:
 
         return chla
 
-    def spm(self, rrs_dict, class_owt_spt, alg='owt', limits=True, mode_Jiang=None, rasterio_rast=None, shapefile=None,
+    def turb(self, rrs_dict, class_owt_spt, alg='owt', limits=True, mode_Jiang=None, rasterio_rast=None, shapefile=None,
             min_px=9):
         """
-        Function to calculate the suspended particulate matter (SPM) based on the optical water type (OWT)
+        Function to calculate the turbidity based on the optical water type (OWT)
 
         Parameters
         ----------
@@ -844,16 +833,16 @@ class Raster:
 
         Returns
         -------
-        spm: an array, with the same size as the input bands, with the modeled values
+        turb: an array, with the same size as the input bands, with the modeled values
         """
         import getpak.inversion_functions as ifunc
-        spm = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='float32')
+        turb = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='float32')
 
         # create a matrix for the outliers
         if not hasattr(self, 'out'):
             self.out = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='uint8')
 
-        # spm functions for each OWT
+        # turb functions for each OWT
         classes = [1, 2, 3, 4]
         index = np.where(np.isin(class_owt_spt, classes))
         if len(index[0] > 0):
@@ -861,86 +850,86 @@ class Raster:
                 classes = [1]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    spm[index] = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Rrs_B1'].values[index],
+                    turb[index] = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Rrs_B1'].values[index],
                                                            Blue=rrs_dict['Rrs_B2'].values[index],
                                                            Green=rrs_dict['Rrs_B3'].values[index],
                                                            Red=rrs_dict['Rrs_B4'].values[index])
                     if limits:
                         lims = [0, 50]
-                        out = np.where((spm[index] < lims[0]) | (spm[index] > lims[1]))
-                        spm[index[0][out], index[1][out]] = np.nan
+                        out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
+                        turb[index[0][out], index[1][out]] = np.nan
                         self.out[index[0][out], index[1][out]] += 1
 
                 classes = [2]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    spm[index] = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Rrs_B1'].values[index],
+                    turb[index] = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Rrs_B1'].values[index],
                                                          Blue=rrs_dict['Rrs_B2'].values[index],
                                                          Green=rrs_dict['Rrs_B3'].values[index],
                                                          Red=rrs_dict['Rrs_B4'].values[index])
                     if limits:
                         lims = [10, 500]
-                        out = np.where((spm[index] < lims[0]) | (spm[index] > lims[1]))
-                        spm[index[0][out], index[1][out]] = np.nan
+                        out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
+                        turb[index[0][out], index[1][out]] = np.nan
                         self.out[index[0][out], index[1][out]] += 1
 
                 classes = [3]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    spm[index] = ifunc.spm_zhang2014(RedEdge1=rrs_dict['Rrs_B5'].values[index])
+                    turb[index] = ifunc.spm_zhang2014(RedEdge1=rrs_dict['Rrs_B5'].values[index])
 
                     if limits:
                         lims = [20, 1000]
-                        out = np.where((spm[index] < lims[0]) | (spm[index] > lims[1]))
-                        spm[index[0][out], index[1][out]] = np.nan
+                        out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
+                        turb[index[0][out], index[1][out]] = np.nan
                         self.out[index[0][out], index[1][out]] += 1
 
                 classes = [4]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    spm[index] = ifunc.spm_binding2010(RedEdge2=rrs_dict['Rrs_B6'].values[index])
+                    turb[index] = ifunc.spm_binding2010(RedEdge2=rrs_dict['Rrs_B6'].values[index])
 
                     if limits:
                         lims = [50, 2000]
-                        out = np.where((spm[index] < lims[0]) | (spm[index] > lims[1]))
-                        spm[index[0][out], index[1][out]] = np.nan
+                        out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
+                        turb[index[0][out], index[1][out]] = np.nan
                         self.out[index[0][out], index[1][out]] += 1
 
             elif alg == 'Hybrid':
-                spm[index] = ifunc.spm_s3(Red=rrs_dict['Rrs_B4'].values[index],
+                turb[index] = ifunc.spm_s3(Red=rrs_dict['Rrs_B4'].values[index],
                                           Nir2=rrs_dict['Rrs_B8A'].values[index])
             elif alg == 'Nechad':
-                spm[index] = ifunc.spm_nechad(Red=rrs_dict['Rrs_B4'].values[index])
+                turb[index] = ifunc.spm_nechad(Red=rrs_dict['Rrs_B4'].values[index])
 
             elif alg == 'NechadGreen':
-                spm[index] = ifunc.spm_nechad(Red=rrs_dict['Rrs_B3'].values[index], a=228.72, c=0.2200)
+                turb[index] = ifunc.spm_nechad(Red=rrs_dict['Rrs_B3'].values[index], a=228.72, c=0.2200)
 
             elif alg == 'Binding':
-                spm[index] = ifunc.spm_binding2010(RedEdge2=rrs_dict['Rrs_B6'].values[index])
+                turb[index] = ifunc.spm_binding2010(RedEdge2=rrs_dict['Rrs_B6'].values[index])
 
             elif alg == 'Zhang':
-                spm[index] = ifunc.spm_zhang2014(RedEdge1=rrs_dict['Rrs_B5'].values[index])
+                turb[index] = ifunc.spm_zhang2014(RedEdge1=rrs_dict['Rrs_B5'].values[index])
 
             elif alg == 'Jiang_Green':
-                spm[index] = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Rrs_B1'].values[index],
+                turb[index] = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Rrs_B1'].values[index],
                                                        Blue=rrs_dict['Rrs_B2'].values[index],
                                                        Green=rrs_dict['Rrs_B3'].values[index],
                                                        Red=rrs_dict['Rrs_B4'].values[index])
 
             elif alg == 'Jiang_Red':
-                spm[index] = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Rrs_B1'].values[index],
+                turb[index] = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Rrs_B1'].values[index],
                                                      Blue=rrs_dict['Rrs_B2'].values[index],
                                                      Green=rrs_dict['Rrs_B3'].values[index],
                                                      Red=rrs_dict['Rrs_B4'].values[index])
             elif alg == 'Dogliotti':
-                spm[index] = ifunc.spm_dogliotti_S2(Red=rrs_dict['Rrs_B4'].values[index],
+                turb[index] = ifunc.spm_dogliotti_S2(Red=rrs_dict['Rrs_B4'].values[index],
                                                      Nir2=rrs_dict['Rrs_B8A'].values[index])
             elif alg == 'Conde':
-                spm[index] = ifunc.spm_conde(Red=rrs_dict['Rrs_B4'].values[index])
+                turb[index] = ifunc.spm_conde(Red=rrs_dict['Rrs_B4'].values[index])
 
             elif alg == 'Jiang':
                 if mode_Jiang == 'pixel':
-                    spm[index] = ifunc.spm_jiang2021(Aerosol=rrs_dict['Rrs_B1'].values[index],
+                    turb[index] = ifunc.spm_jiang2021(Aerosol=rrs_dict['Rrs_B1'].values[index],
                                                      Blue=rrs_dict['Rrs_B2'].values[index],
                                                      Green=rrs_dict['Rrs_B3'].values[index],
                                                      Red=rrs_dict['Rrs_B4'].values[index],
@@ -963,51 +952,51 @@ class Raster:
                             # classifying only the valid pixels inside the polygon
                             values = np.where(valid_pixels, out, 0)
                             # adding to avoid replacing values of cropping by other polygons
-                            spm[slices[0], slices[1]] += values.reshape(mask.shape)
+                            turb[slices[0], slices[1]] += values.reshape(mask.shape)
 
         # removing espurious values and zeros
-        out = np.where((spm == 0) | np.isinf(spm))
-        spm[out] = np.nan
+        out = np.where((turb == 0) | np.isinf(turb))
+        turb[out] = np.nan
         self.out[out] = 1
 
-        return spm
+        return turb
 
-    def secchi_dd(self, rrs_dict, class_owt_spt, upper_lim=50, lower_lim=0):
-        """
-        Function to calculate the Secchi disk depth (SPM) based on the optical water type (OWT)
-
-        Parameters
-        ----------
-        rrs_dict: rrs_dict: a xarray Dataset containing the Rrs bands
-        class_owt_spt: an array, with the same size as the input bands, with the OWT pixels
-
-        Returns
-        -------
-        secchi: an array, with the same size as the input bands, with the modeled values
-        """
-        import getpak.inversion_functions as ifunc
-        secchi = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='float32')
-
-        # create a matrix for the outliers
-        if not hasattr(self, 'out'):
-            self.out = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='uint8')
-
-        # spm functions for each OWT
-        classes = [1, 4, 5, 6, 2, 7, 8, 11, 12, 3, 9, 10, 13]
-        index = np.where(np.isin(class_owt_spt, classes))
-        if len(index[0] > 0):
-            secchi[index] = ifunc.functions['SDD_Lee']['function'](Red=rrs_dict['Rrs_B4'].values[index])
-
-        # removing espurious values and zeros
-        if isinstance(upper_lim, (int, float)) and isinstance(lower_lim, (int, float)):
-            out = np.where((secchi < lower_lim) | (secchi > upper_lim))
-            secchi[out] = np.nan
-            self.out[out] = 1
-
-        out = np.where((secchi == 0) | np.isinf(secchi))
-        secchi[out] = np.nan
-
-        return secchi
+    # def secchi_dd(self, rrs_dict, class_owt_spt, upper_lim=50, lower_lim=0):
+    #     """
+    #     Function to calculate the Secchi disk depth (SDD) based on the optical water type (OWT)
+    #
+    #     Parameters
+    #     ----------
+    #     rrs_dict: rrs_dict: a xarray Dataset containing the Rrs bands
+    #     class_owt_spt: an array, with the same size as the input bands, with the OWT pixels
+    #
+    #     Returns
+    #     -------
+    #     secchi: an array, with the same size as the input bands, with the modeled values
+    #     """
+    #     import getpak.inversion_functions as ifunc
+    #     secchi = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='float32')
+    #
+    #     # create a matrix for the outliers
+    #     if not hasattr(self, 'out'):
+    #         self.out = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='uint8')
+    #
+    #     # spm functions for each OWT
+    #     classes = [1, 4, 5, 6, 2, 7, 8, 11, 12, 3, 9, 10, 13]
+    #     index = np.where(np.isin(class_owt_spt, classes))
+    #     if len(index[0] > 0):
+    #         secchi[index] = ifunc.functions['SDD_Lee']['function'](Red=rrs_dict['Rrs_B4'].values[index])
+    #
+    #     # removing espurious values and zeros
+    #     if isinstance(upper_lim, (int, float)) and isinstance(lower_lim, (int, float)):
+    #         out = np.where((secchi < lower_lim) | (secchi > upper_lim))
+    #         secchi[out] = np.nan
+    #         self.out[out] = 1
+    #
+    #     out = np.where((secchi == 0) | np.isinf(secchi))
+    #     secchi[out] = np.nan
+    #
+    #     return secchi
 
     @staticmethod
     def water_colour(rrs_dict, bands=['Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5']):
@@ -1125,12 +1114,6 @@ class GRS:
             INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
             logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
             self.log = u.create_log_handler(logfile)
-        
-        # Import CRS projection information from /data/s2_proj_ref.json
-        s2projdata = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
-        with s2projdata.open('rb') as fp:
-            byte_content = fp.read()
-        self.s2projgrid = json.loads(byte_content)
 
     @staticmethod
     def metadata(grs_file_entry):
@@ -1269,38 +1252,6 @@ class GRS:
         outdata = None
         self.log.info('')
         pass
-
-    def internal_ref_param2tiff(self, ndarray_data, tile_id, output_img, no_data=0, gdal_driver_name="GTiff"):
-
-        # Gather information from the template file
-        ref_data = self.s2projgrid[tile_id]
-        trans = ref_data['trans']
-        proj = ref_data['proj']
-        # nodatav = 0 #data.GetNoDataValue()
-        # Create file using information from the template
-        outdriver = gdal.GetDriverByName(gdal_driver_name)  # http://www.gdal.org/gdal_8h.html
-
-        [cols, rows] = ref_data['cols'], ref_data['rows']
-
-        print(f'Writing output .tiff')
-        # GDT_Byte = 1, GDT_UInt16 = 2, GDT_UInt32 = 4, GDT_Int32 = 5, GDT_Float32 = 6,
-        # options=['COMPRESS=PACKBITS'] -> https://gdal.org/drivers/raster/gtiff.html#creation-options
-        outdata = outdriver.Create(output_img, rows, cols, 1, gdal.GDT_Float32, options=['COMPRESS=PACKBITS'])
-        # Write the array to the file, which is the original array in this example
-        outdata.GetRasterBand(1).WriteArray(ndarray_data)
-        # Set a no data value if required
-        outdata.GetRasterBand(1).SetNoDataValue(no_data)
-        # Georeference the image
-        outdata.SetGeoTransform(trans)
-        # Write projection information
-        outdata.SetProjection(proj)
-
-        # Closing the files
-        # https://gdal.org/tutorials/raster_api_tut.html#using-create
-        # data = None
-        outdata = None
-        self.log.info('')
-        pass
     
     def _get_shp_features(self, shp_file, unique_key='id', grs_crs='EPSG:32720'):
         '''
@@ -1362,8 +1313,7 @@ class GRS:
 
         Returns
         -------
-        @return df: pd.DataFrame containing the mean Rrs values 
-        for each band and feature in the input shapefile.
+        @return result: bla bla bla
         '''
         try:
             # No need to print or log, the functions should handle it internally.
@@ -1405,310 +1355,4 @@ class GRS:
             pt_stats[d.grs_v20nc_s2bands[band]][pt_id] = mean_rrs
         
         df = pd.DataFrame(pt_stats)
-        return df
-
-class S3_engine:
-    """
-    Provide methods to manipulate NetCDF4 data from Sentinel-3 OLCI products.
-    
-    Input
-    -----
-    @input_nc_folder: string path to the .SEN3 folder containing .nc files
-    @parent_log: logger object from the parent class (internal use)
-
-    Methods
-    -------
-    TO-DO
-
-    Parameters
-    ----------
-    @log : logger object
-    @nc_base_name: string containing the base name of the .SEN3 folder
-    @product: string containing the product type (WFR/EFR/SYN)
-    @netcdf_valid_band_list: list of valid bands in the .SEN3 folder
-    @g_lat: 2D array containing the latitude values
-    @g_lon: 2D array containing the longitude values
-    @t_lat: 2D array containing the tie latitude values
-    @t_lon: 2D array containing the tie longitude values
-    @OAA: 2D array containing the OAA values
-    @OZA: 2D array containing the OZA values
-    @SAA: 2D array containing the SAA values
-    @SZA: 2D array containing the SZA values
-    """
-
-    def __init__(self, input_nc_folder=None, parent_log=None, product='wfr'):
-        self.log = parent_log
-        self.nc_folder = Path(input_nc_folder)
-        self.nc_base_name = os.path.basename(input_nc_folder).split('.')[0]
-        self.product = product.lower()
-        self.netcdf_valid_band_list = self.get_valid_band_files(rad_only=False)
-
-        if parent_log:
-            self.log = parent_log
-        else:
-            INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
-            logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
-            self.log = u.create_log_handler(logfile)
-
-        if self.product.lower() == 'wfr':
-            self.log.info(f'{os.getpid()} - Initializing geometries for: {self.nc_base_name}')
-            geo_coord = nc.Dataset(self.nc_folder / 'geo_coordinates.nc')
-            self.g_lat = geo_coord['latitude'][:]
-            self.g_lon = geo_coord['longitude'][:]
-
-            # Load and resize tie LON/LAT Bands using the geo_coordinates.nc file dimensions: (4091, 4865)
-            tie_geo = nc.Dataset(self.nc_folder / 'tie_geo_coordinates.nc')
-
-            self.t_lat = tie_geo['latitude'][:]
-            self.t_lat = resize(self.t_lat, (self.g_lat.shape[0], self.g_lat.shape[1]), anti_aliasing=False)
-            self.t_lon = tie_geo['longitude'][:]
-            self.t_lon = resize(self.t_lon, (self.g_lon.shape[0], self.g_lon.shape[1]), anti_aliasing=False)
-
-            # Load and resize Sun Geometry Angle Bands using the geo_coordinates.nc file dimensions: (4091, 4865)
-            t_geometries = nc.Dataset(self.nc_folder / 'tie_geometries.nc')
-
-            self.OAA = t_geometries['OAA'][:]
-            self.OAA = resize(self.OAA, (self.g_lon.shape[0], self.g_lon.shape[1]), anti_aliasing=False)
-            self.OZA = t_geometries['OZA'][:]
-            self.OZA = resize(self.OZA, (self.g_lon.shape[0], self.g_lon.shape[1]), anti_aliasing=False)
-            self.SAA = t_geometries['SAA'][:]
-            self.SAA = resize(self.SAA, (self.g_lon.shape[0], self.g_lon.shape[1]), anti_aliasing=False)
-            self.SZA = t_geometries['SZA'][:]
-            self.SZA = resize(self.SZA, (self.g_lon.shape[0], self.g_lon.shape[1]), anti_aliasing=False)
-
-        elif self.product.lower() == 'syn':
-            dsgeo = nc.Dataset(self.nc_folder / 'geolocation.nc')
-            self.g_lat = dsgeo['lat'][:]
-            self.g_lon = dsgeo['lon'][:]
-
-        else:
-            self.log.info(f'Invalid product: {self.product.upper()}.')
-            sys.exit(1)
-
-    def __repr__(self):
-        return f'{type(self.t_lat)}, ' \
-               f'{type(self.t_lon)}, ' \
-               f'{type(self.g_lat)}, ' \
-               f'{type(self.g_lon)}, ' \
-               f'{type(self.OAA)}, ' \
-               f'{type(self.OZA)}, ' \
-               f'{type(self.SAA)},' \
-               f'{type(self.SZA)},' \
-               f'nc_base_name:{self.nc_base_name}'
-
-    def get_valid_band_files(self, rad_only=True):
-        """
-        Search inside the .SEN3 image folder for files ended with .nc
-        Default behavior is to return only the radiometric bands.
-        If rad_only=False it will return everything ended in .nc extension.
-
-
-        Returns
-        -------
-        rad_only=True
-        @return nc_bands: list of files containing valid S3 .nc bands available.
-        
-        rad_only=False
-        @return nc_files: list of files containing every .nc file available.
-        """
-        if self.nc_folder is None:
-            self.log.info(f'Unable to find files. NetCDF image folder is not defined during {__name__} class instance.')
-            sys.exit(1)
-
-        sentinel_images_path = self.nc_folder
-
-        # retrieve all files in folder
-        files = os.listdir(sentinel_images_path)
-
-        # extract only NetCDFs from the file list
-        nc_files = [f for f in files if f.endswith('.nc')]
-
-        # extract only the radiometric bands from the NetCDF list
-        nc_bands = [b for b in nc_files if b.startswith('Oa')]
-
-        return nc_bands if rad_only else nc_files
-
-    def latlon_2_xy_poly(self, poly_path, go_parallel=False):
-        """
-        Given an input polygon and image, return a dataframe containing
-        the data of the image that falls inside the polygon.
-        """
-        self.log.info(f'Converting the polygon coordinates into a matrix x,y poly...')
-        # I) Convert the lon/lat polygon into a x/y poly:
-        xy_vert, ll_vert = self._lat_lon_2_xy(poly_path=poly_path, parallel=go_parallel)
-
-        return xy_vert, ll_vert
-
-    def _lat_lon_2_xy(self, poly_path, parallel=True):
-        """
-        Takes in a polygon file and return a dataframe containing
-        the data in each band that falls inside the polygon.
-        """
-        # self._test_initialized()
-
-        if parallel:
-            gpc = ParallelCoord()
-
-            xy_vertices = [gpc.parallel_get_xy_poly(self.g_lat, self.g_lon, vert) for vert in poly_path]
-        else:
-            xy_vertices = [u.get_x_y_poly(self.g_lat, self.g_lon, vert) for vert in poly_path]
-
-        return xy_vertices, poly_path
-
-    def get_raster_mask(self, xy_vertices):
-        """
-        Creates a boolean mask of 0 and 1 with the polygons using the nc resolution.
-        """
-        # self._test_initialized()
-        # Generate extraction mask
-
-        img = np.zeros(self.g_lon.shape)
-        cc = np.ndarray(shape=(0,), dtype='int64')
-        rr = np.ndarray(shape=(0,), dtype='int64')
-
-        for vert in xy_vertices:
-            t_rr, t_cc = polygon(vert[:, 0], vert[:, 1], self.g_lon.shape)
-            img[t_rr, t_cc] = 1
-            cc = np.append(cc, t_cc)
-            rr = np.append(rr, t_rr)
-
-        return img, cc, rr
-
-    def get_rgb_from_poly(self, xy_vertices):
-
-        # II) Get the bounding box:
-        xmin, xmax, ymin, ymax = u.bbox(xy_vertices)
-
-        # III) Get only the RGB bands:
-        if self.product.lower() == 'wfr':
-            ds = nc.Dataset(self.nc_folder / 'Oa08_reflectance.nc')
-            red = ds['Oa08_reflectance'][:]
-            ds = nc.Dataset(self.nc_folder / 'Oa06_reflectance.nc')
-            green = ds['Oa06_reflectance'][:]
-            ds = nc.Dataset(self.nc_folder / 'Oa03_reflectance.nc')
-            blue = ds['Oa03_reflectance'][:]
-
-        elif self.product.lower() == 'syn':
-            ds = nc.Dataset(self.nc_folder / 'Syn_Oa08_reflectance.nc')
-            red = ds['SDR_Oa08'][:]
-            ds = nc.Dataset(self.nc_folder / 'Syn_Oa06_reflectance.nc')
-            green = ds['SDR_Oa06'][:]
-            ds = nc.Dataset(self.nc_folder / 'Syn_Oa03_reflectance.nc')
-            blue = ds['SDR_Oa03'][:]
-        else:
-            self.log.info(f'Invalid product: {self.product.upper()}.')
-            sys.exit(1)
-
-        # IV) Subset the bands using the bbox:
-        red = red[ymin:ymax, xmin:xmax]
-        green = green[ymin:ymax, xmin:xmax]
-        blue = blue[ymin:ymax, xmin:xmax]
-
-        # V) Stack the bands vertically:
-        # https://stackoverflow.com/questions/10443295/combine-3-separate-numpy-arrays-to-an-rgb-image-in-python
-        rgb_uint8 = (np.dstack((red, green, blue)) * 255.999).astype(np.uint8)
-
-        return red, green, blue, rgb_uint8
-
-
-class ParallelCoord:
-
-    @staticmethod
-    def vect_dist_subtraction(coord_pair, grid):
-        subtraction = coord_pair - grid
-        dist = np.linalg.norm(subtraction, axis=2)
-        result = np.where(dist == dist.min())
-        target_x_y = [result[0][0], result[1][0]]
-        return target_x_y
-
-    def parallel_get_xy_poly(self, lat_arr, lon_arr, polyline):
-        # Stack LAT and LON in the Z axis
-        grid = np.concatenate([lat_arr[..., None], lon_arr[..., None]], axis=2)
-
-        # Polyline is a GeoJSON coordinate array
-        polyline = polyline.squeeze()  # squeeze removes one of the dimensions of the array
-        # https://numpy.org/doc/stable/reference/generated/numpy.squeeze.html
-
-        # Generate a list containing the lat, lon coordinates for each point of the input poly
-        coord_vect_pairs = []
-        for i in range(polyline.shape[0]):
-            coord_vect_pairs.append(np.array([polyline[i, 1], polyline[i, 0]]).reshape(1, 1, -1))
-
-        # for future reference
-        # https://stackoverflow.com/questions/6832554/multiprocessing-how-do-i-share-a-dict-among-multiple-processes
-        cores = u.get_available_cores()
-        with concurrent.futures.ProcessPoolExecutor(max_workers=cores) as executor:
-            try:
-                result = list(executor.map(self.vect_dist_subtraction, coord_vect_pairs, [grid]*len(coord_vect_pairs)))
-
-            except concurrent.futures.process.BrokenProcessPool as ex:
-                print(f"{ex} This might be caused by limited system resources. "
-                      f"Try increasing system memory or disable concurrent processing. ")
-
-        return np.array(result)
-
-
-class ParallelBandExtract:
-
-    def __init__(self, parent_log=None):
-        if parent_log:
-            self.log = parent_log
-
-    def _get_band_in_nc(self, file_n_band, rr, cc):
-        
-        print(u"\u2588", end='')
-        # logging.info(f'{os.getpid()} | Extracting band: {file_n_band[1]} from file: {file_n_band[0]}.\n')
-        # self.log.info(f'{os.getpid()} | Extracting band: {file_n_band[1]} from file: {file_n_band[0]}.\n')
-        result = {}
-        # load NetCDF folder + nc_file_name
-        ds = nc.Dataset(file_n_band[0])
-        # load the nc_band_name as a matrix and unmask its values
-        band = ds[file_n_band[1]][:].data
-        # extract the values of the matrix and return as a dict entry
-        result[file_n_band[1]] = [band[x, y] for x, y in zip(rr, cc)]
-        return result
-
-    def nc_2_df(self, rr, cc, oaa, oza, saa, sza, lon, lat, nc_folder, wfr_files_p, parent_log=None):
-        """
-        Given an input polygon and image, return a dataframe containing
-        the data of the image that falls inside the polygon.
-        """
-        if parent_log:
-            self.log = logging.getLogger(name=parent_log)
-
-        wfr_files_p = [(os.path.join(nc_folder, nc_file), nc_band) for nc_file, nc_band in wfr_files_p]
-
-        # Generate initial df
-        custom_subset = {'x': rr, 'y': cc}
-        df = pd.DataFrame(custom_subset)
-        df['lat'] = [lat[x, y] for x, y in zip(df['x'], df['y'])]
-        df['lon'] = [lon[x, y] for x, y in zip(df['x'], df['y'])]
-        df['OAA'] = [oaa[x, y] for x, y in zip(df['x'], df['y'])]
-        df['OZA'] = [oza[x, y] for x, y in zip(df['x'], df['y'])]
-        df['SAA'] = [saa[x, y] for x, y in zip(df['x'], df['y'])]
-        df['SZA'] = [sza[x, y] for x, y in zip(df['x'], df['y'])]
-
-        cores = u.get_available_cores()
-        # Populate the initial DF with the output from the other bands
-        with concurrent.futures.ProcessPoolExecutor(max_workers=cores) as executor:
-            try:
-                print(u.repeat_to_length('_', len(wfr_files_p)))
-                list_of_bands = list(executor.map(
-                    self._get_band_in_nc, wfr_files_p,
-                    [rr] * len(wfr_files_p),
-                    [cc] * len(wfr_files_p)
-                ))
-                print(' Done.')
-            except concurrent.futures.process.BrokenProcessPool as ex:
-                print(f"{ex} This might be caused by limited system resources. "
-                              f"Try increasing system memory or disable concurrent processing. ")
-
-        # For every returned dict inside the list, grab only the Key and append it at the final DF
-        for b in list_of_bands:
-            for key, val in b.items():
-                df[key] = val
-
-        # DROP NODATA
-        idx_names = df[df['Oa08_reflectance'] == 65535.0].index
-        df.drop(idx_names, inplace=True)
         return df

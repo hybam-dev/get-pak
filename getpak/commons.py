@@ -123,11 +123,10 @@ class Utils:
     @staticmethod
     def depth(somelist): return isinstance(somelist, list) and max(map(Utils.depth, somelist)) + 1
 
-    @staticmethod
-    def get_available_cores():
+    def get_available_cores(self):
         cpu_count = os.cpu_count() - 1
         if cpu_count <= 0:
-            print(f'Invalid number of CPU cores available: {os.cpu_count()}.')
+            self.log.info(f'Invalid number of CPU cores available: {os.cpu_count()}.')
             sys.exit(1)
         elif cpu_count > 61:
             cpu_count = 61
@@ -420,6 +419,37 @@ class Utils:
 
         return wd_dates, wd_masks_list
 
+    def copy_waterdetect_invalidmasks(self, input_folder, output_folder):
+        """
+        Function to find all invalid masks from waterdetect in a folder, get their dates, and copy them to a
+        # new folder with a new name. This function also writes the path of the water masks for each date
+
+        Parameters
+        ----------
+        input_folder: folder where the waterdetect masks are
+        output_folder
+
+        Returns
+        -------
+        wd_dates: list of dates of the invalid masks
+        wd_masks_list: list of the path to the invalid masks
+        """
+        from pathlib import Path
+        import shutil
+        wd_masks_list = []
+        for root, dirs, files in os.walk(input_folder, topdown=False):
+            for name in files:
+                if name.endswith('.tif') and '_invalid_mask' in name:
+                    f = Path(os.path.join(root, name))
+                    dest_plus_name = os.path.join(output_folder, name)
+                    # copying to new folder
+                    shutil.copyfile(f, dest_plus_name)
+                    wd_masks_list.append(Path(dest_plus_name))
+
+        print(f'Copied {len(wd_masks_list)} invalid masks to: {output_folder}\n')
+
+        return wd_masks_list
+
     def list_waterdetect_masks(self, input_folder):
         """
         This function finds all renamed waterdetect water masks (from function rename_waterdetect_masks) in a folder,
@@ -437,7 +467,7 @@ class Utils:
         from pathlib import Path
         wd_dates, wd_masks_list = [], []
         for file in os.listdir(input_folder):
-            if file.endswith('.tif'):
+            if file.endswith('.tif') and '_water_mask' in file:
                 f = Path(os.path.join(input_folder, file))
                 # appending the date and path
                 nome = file.split(
