@@ -45,3 +45,5 @@ Clone `getpak` repo to the desired location, enter it and type:
 pip install -e .
 ```
 (Setup in edit mode is strongly recommended until a valid stable release is added to the Python Package Index - PyPI).
+
+test
