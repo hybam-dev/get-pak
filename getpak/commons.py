@@ -508,17 +508,41 @@ class Utils:
 
 class DefaultDicts:
 
-    grs_v20nc_s2bands = {'Rrs_B1': 443,
-                        'Rrs_B2': 490,
-                        'Rrs_B3': 560,
-                        'Rrs_B4': 665,
-                        'Rrs_B5': 705,
-                        'Rrs_B6': 740,
-                        'Rrs_B7': 783,
-                        'Rrs_B8': 842,
-                        'Rrs_B8A': 865,
-                        'Rrs_B11': 1610,
-                        'Rrs_B12': 2190}
+    grs_v20nc_s2bands = {'Aerosol': 443,
+                        'Blue': 490,
+                        'Green': 560,
+                        'Red': 665,
+                        'RedEdge1': 705,
+                        'RedEdge2': 740,
+                        'RedEdge3': 783,
+                        'Nir1': 842,
+                        'Nir2': 865,
+                        'Swir1': 1610,
+                        'Swir2': 2190}
+
+    acolite_nc_s2abands = {'Aerosol': "443",
+                         'Blue': "492",
+                         'Green': "560",
+                         'Red': "665",
+                         'RedEdge1': "704",
+                         'RedEdge2': "740",
+                         'RedEdge3': "783",
+                         'Nir1': "833",
+                         'Nir2': "865",
+                         'Swir1': "1614",
+                         'Swir2': "2202"}
+
+    acolite_nc_s2bbands = {'Aerosol': "442",
+                         'Blue': "492",
+                         'Green': "559",
+                         'Red': "665",
+                         'RedEdge1': "704",
+                         'RedEdge2': "739",
+                         'RedEdge3': "780",
+                         'Nir1': "833",
+                         'Nir2': "864",
+                         'Swir1': "1610",
+                         'Swir2': "2186"}
 
     clustering_methods = {'M0': ['Oa17_reflectance:float', 'Oa21_reflectance:float'],
                           'M1': ['Oa17_reflectance:float', 'T865:float', 'A865:float'],

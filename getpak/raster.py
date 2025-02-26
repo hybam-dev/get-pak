@@ -1,8 +1,8 @@
 import os
 import sys
 import json
-import dask
-import logging
+import psutil
+# import logging
 import rasterio
 import rasterio.mask
 import importlib_resources
@@ -14,6 +14,7 @@ import geopandas as gpd
 
 from osgeo import gdal
 from dask import delayed
+from dask.distributed import Client as dkClient, LocalCluster
 from pathlib import Path
 from datetime import datetime
 from rasterstats import zonal_stats
@@ -50,34 +51,48 @@ class Raster:
         else:
             INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
             logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
+
         # Import CRS projection information from /data/s2_proj_ref.json
         s2projdata = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
         with s2projdata.open('rb') as fp:
             byte_content = fp.read()
         self.s2projgrid = json.loads(byte_content)
 
-        # Import OWT means for S2 MSI from /data/means_OWT_Spyrakos_S2A_B2-7.json
+        # Import OWT means for S2 MSI from /data/means_OWT_Spyrakos_S2A_B1-7.json
         means_owt = importlib_resources.files(__name__).joinpath('data/means_OWT_Spyrakos_S2A_B1-7.json')
         with means_owt.open('rb') as fp:
             byte_content = fp.read()
-        self.owts_B1_7 = dict(json.loads(byte_content))
+        self.owts_spy_S2_B1_7 = dict(json.loads(byte_content))
 
+        # Import OWT means for S2 MSI from /data/means_OWT_Spyrakos_S2A_B2-7.json
         means_owt = importlib_resources.files(__name__).joinpath('data/means_OWT_Spyrakos_S2A_B2-7.json')
         with means_owt.open('rb') as fp:
             byte_content = fp.read()
-        self.owts_B2_7 = dict(json.loads(byte_content))
+        self.owts_spy_S2_B2_7 = dict(json.loads(byte_content))
 
+        # Import OWT means for S2 MSI from /data/means_OWT_Cordeiro_S2A_SPM.json
         means_owt = importlib_resources.files(__name__).joinpath('data/Means_OWT_Cordeiro_S2A_SPM.json')
         with means_owt.open('rb') as fp:
             byte_content = fp.read()
-        self.owts_spm_B1_8A = dict(json.loads(byte_content))
+        self.owts_spm_S2_B1_8A = dict(json.loads(byte_content))
 
+        # Import OWT means for S2 MSI from /data/means_OWT_Cordeiro_S2A_SPM_B2-8A.json
         means_owt = importlib_resources.files(__name__).joinpath('data/Means_OWT_Cordeiro_S2A_SPM_B2-8A.json')
         with means_owt.open('rb') as fp:
             byte_content = fp.read()
-        self.owts_spm_B2_8A = dict(json.loads(byte_content))
+        self.owts_spm_S2_B2_8A = dict(json.loads(byte_content))
 
-        # raster
+        # start dask with maximum of 16 GB of RAM
+        try:
+            dkClient.current()
+        except ValueError:
+            # total memory available
+            mem = int(0.75 * psutil.virtual_memory().total / (1024 * 1024 * 1024))
+            # memory limit
+            limit = 16 if mem > 16 else mem
+            # starting dask
+            cluster = LocalCluster(n_workers=4, memory_limit=str(limit/4)+'GB')
+            client = dkClient(cluster)
 
     @staticmethod
     def array2tiff(ndarray_data, str_output_file, transform, projection, no_data=-1, compression='COMPRESS=PACKBITS'):
@@ -349,9 +364,9 @@ class Raster:
 
         # Convert OWT values to numpy array for vectorized computations
         if mode == 'B1':
-            M = np.array([list(val.values()) for val in self.owts_B1_7.values()])
+            M = np.array([list(val.values()) for val in self.owts_spy_S2_B1_7.values()])
         else:
-            M = np.array([list(val.values()) for val in self.owts_B2_7.values()])
+            M = np.array([list(val.values()) for val in self.owts_spy_S2_B2_7.values()])
         nM = np.linalg.norm(M, axis=1)
 
         # scalar product
@@ -402,10 +417,10 @@ class Raster:
 
         """
         if B1:
-            bands = ['Rrs_B1', 'Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
+            bands = ['Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3']
             mode = 'B1'
         else:
-            bands = ['Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
+            bands = ['Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3']
             mode = 'B2'
         # Drop the variables that won't be used in the classification
         variables_to_drop = [var for var in rrs_dict.variables if var not in bands + ['x', 'y']]
@@ -415,13 +430,13 @@ class Raster:
         # array of OWT class for each pixel
         class_px = np.zeros_like(rrs[bands[0]], dtype='uint8')
         # array of angles to limit the loop
-        angles = np.zeros((len(nzero[0]), len(self.owts_B1_7)), dtype='float16')
+        angles = np.zeros((len(nzero[0]), len(self.owts_spy_S2_B1_7)), dtype='float16')
 
         # creating a new Band 1 by undoing the upsampling of GRS, keeping only the pixels entirely inside water
         if B1:
-            aux = rrs['Rrs_B1'].coarsen(x=3, y=3).mean(skipna=False).interp(x=rrs.x, y=rrs.y, method='nearest').values
-            rrs['Rrs_B160m'] = (('x', 'y'), aux)
-            bands = ['Rrs_B160m', 'Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
+            aux = rrs['Aerosol'].coarsen(x=3, y=3).mean(skipna=False).interp(x=rrs.x, y=rrs.y, method='nearest').values
+            rrs['Aerosol60m'] = (('x', 'y'), aux)
+            bands = ['Aerosol60m', 'Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3']
 
         # loop over each nonzero value in the rrs_dict
         pix = np.zeros((len(nzero[0]), len(bands)))
@@ -461,10 +476,10 @@ class Raster:
         """
         # checking if B1 will be used in the classification
         if B1:
-            bands = ['Rrs_B1', 'Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
+            bands = ['Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3']
             mode = 'B1'
         else:
-            bands = ['Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7']
+            bands = ['Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3']
             mode = 'B2'
         class_spt = np.zeros(rrs_dict[bands[0]].shape, dtype='int32')
         class_shp = np.zeros((len(shapefiles)), dtype='int32')
@@ -506,10 +521,10 @@ class Raster:
 
         """
         if B1:
-            bands = ['Rrs_B1', 'Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7', 'Rrs_B8', 'Rrs_B8A']
+            bands = ['Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3', 'Nir1', 'Nir2']
             mode = 'B1'
         else:
-            bands = ['Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7', 'Rrs_B8', 'Rrs_B8A']
+            bands = ['Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3', 'Nir1', 'Nir2']
             mode = 'B2'
         # Drop the variables that won't be used in the classification
         variables_to_drop = [var for var in rrs_dict.variables if var not in bands + ['x', 'y']]
@@ -519,13 +534,13 @@ class Raster:
         # array of OWT class for each pixel
         class_px = np.zeros_like(rrs[bands[0]], dtype='uint8')
         # array of angles to limit the loop
-        angles = np.zeros((len(nzero[0]), len(self.owts_spm_B1_8A)), dtype='float16')
+        angles = np.zeros((len(nzero[0]), len(self.owts_spm_S2_B1_8A)), dtype='float16')
 
         # creating a new Band 1 by undoing the upsampling of GRS, keeping only the pixels entirely inside water
         if B1:
-            aux = rrs['Rrs_B1'].coarsen(x=3, y=3).mean(skipna=False).interp(x=rrs.x, y=rrs.y, method='nearest').values
-            rrs['Rrs_B160m'] = (('x', 'y'), aux)
-            bands = ['Rrs_B160m', 'Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5', 'Rrs_B6', 'Rrs_B7', 'Rrs_B8', 'Rrs_B8A']
+            aux = rrs['Aerosol'].coarsen(x=3, y=3).mean(skipna=False).interp(x=rrs.x, y=rrs.y, method='nearest').values
+            rrs['Aerosol60m'] = (('x', 'y'), aux)
+            bands = ['Aerosol60m', 'Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3', 'Nir1', 'Nir2']
 
         # loop over each nonzero value in the rrs_dict
         pix = np.zeros((len(nzero[0]), len(bands)))
@@ -533,9 +548,9 @@ class Raster:
             pix[:, i] = rrs[bands[i]].values[nzero]
         # array of values of the OWTs
         if B1:
-            M = np.array([list(val.values()) for val in self.owts_spm_B1_8A.values()])
+            M = np.array([list(val.values()) for val in self.owts_spm_S2_B1_8A.values()])
         else:
-            M = np.array([list(val.values()) for val in self.owts_spm_B2_8A.values()])
+            M = np.array([list(val.values()) for val in self.owts_spm_S2_B2_8A.values()])
         for i in range(len(nzero[0])):
             for j in range(len(M)):
                # angles[i, j] = self._euclid_dist(pix[i, :], mode=mode)
@@ -545,7 +560,7 @@ class Raster:
         # classified using only bands 2 to 7
         if B1:
             nodata = np.where(np.isnan(angles[:, 0]))[0]
-            M = np.array([list(val.values()) for val in self.owts_spm_B2_8A.values()])
+            M = np.array([list(val.values()) for val in self.owts_spm_S2_B2_8A.values()])
             for i in range(len(nodata)):
                 for j in range(len(M)):
                     # angles[nodata[i], j] = self._euclid_dist(pix[i, :], mode='B2')
@@ -626,24 +641,15 @@ class Raster:
         cdom: an array, with the same size as the input bands, with the modeled values
         """
         import getpak.inversion_functions as ifunc
-        cdom = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='float32')
+        cdom = np.zeros(rrs_dict['Red'].shape, dtype='float32')
 
-        # create a matrix for the outliers
-        if not hasattr(self, 'out'):
-            self.out = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='uint8')
-
-        # spm functions for each OWT
-        classes = [1, 4, 5, 6, 2, 7, 8, 11, 12, 3, 9, 10, 13]
-        index = np.where(np.isin(class_owt_spt, classes))
         if len(index[0] > 0):
-            cdom[index] = ifunc.cdom_brezonik(Blue=rrs_dict['Rrs_B2'].values[index],
-                                                                       RedEdg2=rrs_dict['Rrs_B6'].values[index])
+            cdom = ifunc.cdom_brezonik(Blue=rrs_dict['Blue'].values, RedEdg2=rrs_dict['RedEdge2'].values)
 
         # removing espurious values
         if isinstance(upper_lim, (int, float)) and isinstance(lower_lim, (int, float)):
             out = np.where((cdom < lower_lim) | (cdom > upper_lim))
             cdom[out] = np.nan
-            self.out[out] = 1
 
         out = np.where((cdom == 0) | np.isinf(cdom))
         cdom[out] = np.nan
@@ -668,11 +674,7 @@ class Raster:
         chla: an array, with the same size as the input bands, with the modeled values
         """
         import getpak.inversion_functions as ifunc
-        chla = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='float32')
-
-        # create a matrix for the outliers if it doesn't exist
-        if not hasattr(self, 'out'):
-            self.out = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='uint8')
+        chla = np.zeros(rrs_dict['Red'].shape, dtype='float32')
 
         if alg == 'owt':
             # chla functions for each OWT
@@ -680,130 +682,119 @@ class Raster:
             # classes = [1]
             # index = np.where(np.isin(class_owt_spt, classes))
             # if len(index[0] > 0):
-            #     chla[index] = ifunc.chl_gurlin(Red=rrs_dict['Rrs_B4'].values[index],
+            #     chla[index] = ifunc.chl_gurlin(Red=rrs_dict['Red'].values[index],
             #                                                             RedEdg1=rrs_dict['Rrs_B5'].values[index],
             #                                                             a=86.09, b=-517.5, c=886.7)
             #     if limits:
             #         lims = [10, 1000]
             #         out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
             #         chla[index[0][out], index[1][out]] = np.nan
-            #         self.out[index[0][out], index[1][out]] += 1
 
             classes = [1, 6, 10]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_gons(Red=rrs_dict['Rrs_B4'].values[index],
-                                                                      RedEdg1=rrs_dict['Rrs_B5'].values[index],
-                                                                      RedEdg3=rrs_dict['Rrs_B7'].values[index],
-                                                                      aw665=0.425, aw708=0.704)
+                chla[index] = ifunc.chl_gons(Red=rrs_dict['Red'].values[index],
+                                             RedEdg1=rrs_dict['RedEdge1'].values[index],
+                                             RedEdg3=rrs_dict['RedEdge3'].values[index],
+                                             aw665=0.425, aw708=0.704)
                 if limits:
                     lims = [1, 250]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
-                    self.out[index[0][out], index[1][out]] += 1
 
             classes = [2, 4, 5, 11, 12]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_ndci(Red=rrs_dict['Rrs_B4'].values[index],
-                                                                           RedEdg1=rrs_dict['Rrs_B5'].values[index])
+                chla[index] = ifunc.chl_ndci(Red=rrs_dict['Red'].values[index],
+                                             RedEdg1=rrs_dict['RedEdge1'].values[index])
                 if limits:
                     lims = [5, 250]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
-                    self.out[index[0][out], index[1][out]] += 1
 
             # for class 2 and 12, when values of NDCI are >20, use Gilerson instead
             classes = [2, 12]
             conditions = (np.isin(class_owt_spt, classes)) & (chla > 20)
             index = np.where(conditions)
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Rrs_B4'].values[index],
-                                                                      RedEdg1=rrs_dict['Rrs_B5'].values[index])
+                chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
+                                                  RedEdg1=rrs_dict['RedEdge1'].values[index])
                 if limits:
                     lims = [5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
-                    self.out[index[0][out], index[1][out]] += 1
 
             classes = [7, 8]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Rrs_B4'].values[index],
-                                                                      RedEdg1=rrs_dict['Rrs_B5'].values[index])
+                chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
+                                                  RedEdg1=rrs_dict['RedEdge1'].values[index])
                 if limits:
                     lims = [5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
-                    self.out[index[0][out], index[1][out]] += 1
 
             # classes = []
             # index = np.where(np.isin(class_owt_spt, classes))
             # if len(index[0] > 0):
-            #     chla[index] = ifunc.chl_gilerson3(Red=rrs_dict['Rrs_B4'].values[index],
-            #                                                                RedEdg1=rrs_dict['Rrs_B5'].values[index],
-            #                                                                RedEdg2=rrs_dict['Rrs_B6'].values[index])
+            #     chla[index] = ifunc.chl_gilerson3(Red=rrs_dict['Red'].values[index],
+            #                                       RedEdg1=rrs_dict['RedEdge1'].values[index],
+            #                                       RedEdg2=rrs_dict['RedEdge2'].values[index])
             #     if limits:
             #         lims = [10, 1000]
             #         out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
             #         chla[index[0][out], index[1][out]] = np.nan
-            #         self.out[index[0][out], index[1][out]] += 1
 
             classes = [3]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Rrs_B2'].values[index],
-                                            Green=rrs_dict['Rrs_B3'].values[index], a=0.1098, b=-0.755, c=-14.12,
+                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values[index],
+                                            Green=rrs_dict['Green'].values[index], a=0.1098, b=-0.755, c=-14.12,
                                             d=-117, e=-17.76)
                 if limits:
                     lims = [0.01, 50]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
-                    self.out[index[0][out], index[1][out]] += 1
 
             classes = [9]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Rrs_B2'].values[index],
-                                            Green=rrs_dict['Rrs_B3'].values[index], a=0.0536, b=7.308, c=116.2,
+                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values[index],
+                                            Green=rrs_dict['Green'].values[index], a=0.0536, b=7.308, c=116.2,
                                             d=412.4, e=463.5)
                 if limits:
                     lims = [0.01, 50]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
-                    self.out[index[0][out], index[1][out]] += 1
 
             classes = [13]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Rrs_B2'].values[index],
-                                            Green=rrs_dict['Rrs_B3'].values[index], a=-5020, b=2.9e+04, c=-6.1e+04,
+                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values[index],
+                                            Green=rrs_dict['Green'].values[index], a=-5020, b=2.9e+04, c=-6.1e+04,
                                             d=5.749e+04, e=-2.026e+04)
                 if limits:
                     lims = [0.01, 50]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
-                    self.out[index[0][out], index[1][out]] += 1
 
             classes = [14]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Rrs_B2'].values[index],
-                                            Green=rrs_dict['Rrs_B3'].values[index])
+                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values[index],
+                                            Green=rrs_dict['Green'].values[index])
                 if limits:
                     lims = [0.01, 50]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
-                    self.out[index[0][out], index[1][out]] += 1
 
         else:
-            chla = ifunc.chl_gons(Red=rrs_dict['Rrs_B4'].values, RedEdg1=rrs_dict['Rrs_B5'].values,
-                                  RedEdg3=rrs_dict['Rrs_B7'].values)
+            chla = ifunc.chl_gons(Red=rrs_dict['Red'].values, RedEdg1=rrs_dict['RedEdge1'].values,
+                                  RedEdg3=rrs_dict['RedEdge3'].values)
             if limits:
                 lims = [1, 250]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
                 chla[out] = np.nan
-                self.out[out] += 1
 
         # removing espurious values and zeros
         out = np.where((chla == 0) | np.isinf(chla))
@@ -836,128 +827,118 @@ class Raster:
         turb: an array, with the same size as the input bands, with the modeled values
         """
         import getpak.inversion_functions as ifunc
-        turb = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='float32')
+        turb = np.zeros(rrs_dict['Red'].shape, dtype='float32')
 
-        # create a matrix for the outliers
-        if not hasattr(self, 'out'):
-            self.out = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='uint8')
-
-        # turb functions for each OWT
-        classes = [1, 2, 3, 4]
-        index = np.where(np.isin(class_owt_spt, classes))
-        if len(index[0] > 0):
-            if alg == 'owt':
+        if alg == 'owt':
+            # turb functions for each OWT
+            classes = [1, 2, 3, 4]
+            index = np.where(np.isin(class_owt_spt, classes))
+            if len(index[0] > 0):
                 classes = [1]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    turb[index] = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Rrs_B1'].values[index],
-                                                           Blue=rrs_dict['Rrs_B2'].values[index],
-                                                           Green=rrs_dict['Rrs_B3'].values[index],
-                                                           Red=rrs_dict['Rrs_B4'].values[index])
+                    turb[index] = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Aerosol'].values[index],
+                                                            Blue=rrs_dict['Blue'].values[index],
+                                                            Green=rrs_dict['Green'].values[index],
+                                                            Red=rrs_dict['Red'].values[index])
                     if limits:
                         lims = [0, 50]
                         out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
                         turb[index[0][out], index[1][out]] = np.nan
-                        self.out[index[0][out], index[1][out]] += 1
 
                 classes = [2]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    turb[index] = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Rrs_B1'].values[index],
-                                                         Blue=rrs_dict['Rrs_B2'].values[index],
-                                                         Green=rrs_dict['Rrs_B3'].values[index],
-                                                         Red=rrs_dict['Rrs_B4'].values[index])
+                    turb[index] = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Aerosol'].values[index],
+                                                          Blue=rrs_dict['Blue'].values[index],
+                                                          Green=rrs_dict['Green'].values[index],
+                                                          Red=rrs_dict['Red'].values[index])
                     if limits:
                         lims = [10, 500]
                         out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
                         turb[index[0][out], index[1][out]] = np.nan
-                        self.out[index[0][out], index[1][out]] += 1
 
                 classes = [3]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    turb[index] = ifunc.spm_zhang2014(RedEdge1=rrs_dict['Rrs_B5'].values[index])
+                    turb[index] = ifunc.spm_zhang2014(RedEdge1=rrs_dict['RedEdge1'].values[index])
 
                     if limits:
                         lims = [20, 1000]
                         out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
                         turb[index[0][out], index[1][out]] = np.nan
-                        self.out[index[0][out], index[1][out]] += 1
 
                 classes = [4]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    turb[index] = ifunc.spm_binding2010(RedEdge2=rrs_dict['Rrs_B6'].values[index])
+                    turb[index] = ifunc.spm_binding2010(RedEdge2=rrs_dict['RedEdge2'].values[index])
 
                     if limits:
                         lims = [50, 2000]
                         out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
                         turb[index[0][out], index[1][out]] = np.nan
-                        self.out[index[0][out], index[1][out]] += 1
 
-            elif alg == 'Hybrid':
-                turb[index] = ifunc.spm_s3(Red=rrs_dict['Rrs_B4'].values[index],
-                                          Nir2=rrs_dict['Rrs_B8A'].values[index])
-            elif alg == 'Nechad':
-                turb[index] = ifunc.spm_nechad(Red=rrs_dict['Rrs_B4'].values[index])
+        elif alg == 'Hybrid':
+            turb = ifunc.spm_s3(Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
+        elif alg == 'Nechad':
+            turb = ifunc.spm_nechad(Red=rrs_dict['Red'].values)
 
-            elif alg == 'NechadGreen':
-                turb[index] = ifunc.spm_nechad(Red=rrs_dict['Rrs_B3'].values[index], a=228.72, c=0.2200)
+        elif alg == 'NechadGreen':
+            turb = ifunc.spm_nechad(Red=rrs_dict['Red'].values, a=228.72, c=0.2200)
 
-            elif alg == 'Binding':
-                turb[index] = ifunc.spm_binding2010(RedEdge2=rrs_dict['Rrs_B6'].values[index])
+        elif alg == 'Binding':
+            turb = ifunc.spm_binding2010(RedEdge2=rrs_dict['RedEdge2'].values)
 
-            elif alg == 'Zhang':
-                turb[index] = ifunc.spm_zhang2014(RedEdge1=rrs_dict['Rrs_B5'].values[index])
+        elif alg == 'Zhang':
+            turb = ifunc.spm_zhang2014(RedEdge1=rrs_dict['RedEdge1'].values)
 
-            elif alg == 'Jiang_Green':
-                turb[index] = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Rrs_B1'].values[index],
-                                                       Blue=rrs_dict['Rrs_B2'].values[index],
-                                                       Green=rrs_dict['Rrs_B3'].values[index],
-                                                       Red=rrs_dict['Rrs_B4'].values[index])
+        elif alg == 'Jiang_Green':
+            turb = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Aerosol'].values,
+                                             Blue=rrs_dict['Blue'].values,
+                                             Green=rrs_dict['Green'].values,
+                                             Red=rrs_dict['Red'].values)
 
-            elif alg == 'Jiang_Red':
-                turb[index] = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Rrs_B1'].values[index],
-                                                     Blue=rrs_dict['Rrs_B2'].values[index],
-                                                     Green=rrs_dict['Rrs_B3'].values[index],
-                                                     Red=rrs_dict['Rrs_B4'].values[index])
-            elif alg == 'Dogliotti':
-                turb[index] = ifunc.spm_dogliotti_S2(Red=rrs_dict['Rrs_B4'].values[index],
-                                                     Nir2=rrs_dict['Rrs_B8A'].values[index])
-            elif alg == 'Conde':
-                turb[index] = ifunc.spm_conde(Red=rrs_dict['Rrs_B4'].values[index])
+        elif alg == 'Jiang_Red':
+            turb = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Aerosol'].values,
+                                           Blue=rrs_dict['Blue'].values,
+                                           Green=rrs_dict['Green'].values,
+                                           Red=rrs_dict['Red'].values)
+        elif alg == 'Dogliotti':
+            turb = ifunc.spm_dogliotti_S2(Red=rrs_dict['Red'].values,
+                                          Nir2=rrs_dict['Nir2'].values)
+        elif alg == 'Conde':
+            turb = ifunc.spm_conde(Red=rrs_dict['Red'].values)
 
-            elif alg == 'Jiang':
-                if mode_Jiang == 'pixel':
-                    turb[index] = ifunc.spm_jiang2021(Aerosol=rrs_dict['Rrs_B1'].values[index],
-                                                     Blue=rrs_dict['Rrs_B2'].values[index],
-                                                     Green=rrs_dict['Rrs_B3'].values[index],
-                                                     Red=rrs_dict['Rrs_B4'].values[index],
-                                                     RedEdge2=rrs_dict['Rrs_B6'].values[index],
-                                                     Nir2=rrs_dict['Rrs_B8A'].values[index], mode=mode)
-                elif mode_Jiang == 'polygon':
-                    for i, shape in enumerate(shapefile):
-                        values, slices, mask = self.extract_px(rasterio_rast=rasterio_rast, shapefile=shape,
-                                                               rrs_dict=rrs_dict, bands=['Rrs_B1','Rrs_B2','Rrs_B3',
-                                                                                         'Rrs_B4','Rrs_B6','Rrs_B8A'])
-                        # Verifying if there are more pixels than the minimum
-                        valid_pixels = np.isnan(values[0]) == False
-                        if np.count_nonzero(valid_pixels) >= min_px:
-                            out = ifunc.spm_jiang2021(Aerosol=values[0].reshape(mask.shape),
-                                                      Blue=values[1].reshape(mask.shape),
-                                                      Green=values[2].reshape(mask.shape),
-                                                      Red=values[3].reshape(mask.shape),
-                                                      RedEdge2=values[4].reshape(mask.shape),
-                                                      Nir2=values[5].reshape(mask.shape), mode=mode).flatten()
-                            # classifying only the valid pixels inside the polygon
-                            values = np.where(valid_pixels, out, 0)
-                            # adding to avoid replacing values of cropping by other polygons
-                            turb[slices[0], slices[1]] += values.reshape(mask.shape)
+        elif alg == 'Jiang':
+            if mode_Jiang == 'pixel':
+                turb = ifunc.spm_jiang2021(Aerosol=rrs_dict['Aerosol'].values,
+                                           Blue=rrs_dict['Blue'].values,
+                                           Green=rrs_dict['Green'].values,
+                                           Red=rrs_dict['Red'].values,
+                                           RedEdge2=rrs_dict['RedEdge2'].values,
+                                           Nir2=rrs_dict['Nir2'].values, mode=mode_Jiang)
+            elif mode_Jiang == 'polygon':
+                for i, shape in enumerate(shapefile):
+                    values, slices, mask = self.extract_px(rasterio_rast=rasterio_rast, shapefile=shape,
+                                                           rrs_dict=rrs_dict, bands=['Aerosol','Blue','Green',
+                                                                                     'Red','RedEdge2','Nir2'])
+                    # Verifying if there are more pixels than the minimum
+                    valid_pixels = np.isnan(values[0]) == False
+                    if np.count_nonzero(valid_pixels) >= min_px:
+                        out = ifunc.spm_jiang2021(Aerosol=values[0].reshape(mask.shape),
+                                                  Blue=values[1].reshape(mask.shape),
+                                                  Green=values[2].reshape(mask.shape),
+                                                  Red=values[3].reshape(mask.shape),
+                                                  RedEdge2=values[4].reshape(mask.shape),
+                                                  Nir2=values[5].reshape(mask.shape), mode=mode_Jiang).flatten()
+                        # classifying only the valid pixels inside the polygon
+                        values = np.where(valid_pixels, out, 0)
+                        # adding to avoid replacing values of cropping by other polygons
+                        turb[slices[0], slices[1]] += values.reshape(mask.shape)
 
         # removing espurious values and zeros
         out = np.where((turb == 0) | np.isinf(turb))
         turb[out] = np.nan
-        self.out[out] = 1
 
         return turb
 
@@ -977,10 +958,6 @@ class Raster:
     #     import getpak.inversion_functions as ifunc
     #     secchi = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='float32')
     #
-    #     # create a matrix for the outliers
-    #     if not hasattr(self, 'out'):
-    #         self.out = np.zeros(rrs_dict['Rrs_B4'].shape, dtype='uint8')
-    #
     #     # spm functions for each OWT
     #     classes = [1, 4, 5, 6, 2, 7, 8, 11, 12, 3, 9, 10, 13]
     #     index = np.where(np.isin(class_owt_spt, classes))
@@ -991,7 +968,6 @@ class Raster:
     #     if isinstance(upper_lim, (int, float)) and isinstance(lower_lim, (int, float)):
     #         out = np.where((secchi < lower_lim) | (secchi > upper_lim))
     #         secchi[out] = np.nan
-    #         self.out[out] = 1
     #
     #     out = np.where((secchi == 0) | np.isinf(secchi))
     #     secchi[out] = np.nan
@@ -999,7 +975,7 @@ class Raster:
     #     return secchi
 
     @staticmethod
-    def water_colour(rrs_dict, bands=['Rrs_B2', 'Rrs_B3', 'Rrs_B4', 'Rrs_B5']):
+    def water_colour(rrs_dict, bands=['Blue', 'Green', 'Red', 'RedEdge1']):
         """
         Function to calculate the water colour of each pixel based on the Forel-Ule scale, using the bands of Sentinel-2
         MSI, with coefficients derived by linear correlation by van der Woerd and Wernand (2018). The different
@@ -1097,6 +1073,69 @@ class Raster:
 
         return score(angle)
 
+class Input:
+    """
+    Core function to read any input images for processing with GET-Pak
+    """
+
+    def __init__(self, parent_log=None):
+        if parent_log:
+            self.log = parent_log
+        else:
+            INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
+            logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
+            self.log = u.create_log_handler(logfile)
+
+        # start dask with maximum of 16 GB of RAM
+        try:
+            dkClient.current()
+        except ValueError:
+            # total memory available
+            mem = int(0.75 * psutil.virtual_memory().total / (1024 * 1024 * 1024))
+            # memory limit
+            limit = 16 if mem > 16 else mem
+            # starting dask
+            cluster = LocalCluster(n_workers=4, memory_limit=str(limit / 4) + 'GB')
+            client = dkClient(cluster)
+
+    def get_input_dict(self, file, sensor='S2MSI', AC_processor='GRS', grs_version=None):
+        """
+        Function to open the satellite image, depending on user information of sensor and atmospheric correction
+        processor.
+        This class is just a wrapper as it uses the different classes for the different ACs to read the input
+
+        Parameters
+        ----------
+        @file: the path to the image
+        @sensor: a string of the satellite mission, one of:
+            S2MSI for Sentinel-2 MSI A and B
+            S3OLCI for Sentinel-3 OLCI A and B
+        @AC_processor: a string of the AC processor, one of ACOLITE, GRS or SeaDAS
+
+        Returns
+        -------
+        @return img: xarray.DataArray containing the Rrs bands.
+        """
+
+        if sensor == 'S2MSI' and AC_processor == 'GRS':
+            if grs_version:
+                g = GRS()
+                img = g.get_grs_dict(grs_nc_file=file, grs_version=grs_version)
+            else:
+                print("Error: No GRS version!")
+                sys.exit(1)
+        elif sensor == 'S2MSI' and AC_processor == 'ACOLITE':
+            a = ACOLITE_S2()
+            img, meta = a.get_aco_dict(aco_nc_file=file)
+            self.meta = meta
+        else:
+            self.log.error(f'Error: Wrong sensor or AC processor!')
+            print("Error: Wrong sensor or AC processor!")
+            img = None
+            sys.exit(1)
+
+        return img
+
 class GRS:
     """
     Core functionalities to handle GRS files
@@ -1114,6 +1153,9 @@ class GRS:
             INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
             logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
             self.log = u.create_log_handler(logfile)
+
+        # import band names from Commons/DefaultDicts
+        self.grs_v20nc_s2bands = d.grs_v20nc_s2bands
 
     @staticmethod
     def metadata(grs_file_entry):
@@ -1198,11 +1240,12 @@ class GRS:
         @return grs: xarray.DataArray containing 11 Rrs bands.
         The band names can be found at getpak.commons.DefaultDicts.grs_v20nc_s2bands
         """
+        meta = self.metadata(grs_nc_file)
         # list of bands
-        bands = list(d.grs_v20nc_s2bands.keys())
+        bands = list(self.grs_v20nc_s2bands.keys())
         self.log.info(f'Opening GRS version {grs_version} file {grs_nc_file}')
         if grs_version == 'v15':
-            ds = xr.open_dataset(grs_nc_file, engine="netcdf4", decode_coords='all', chunks={'y': 610, 'x': 610})
+            ds = xr.open_dataset(grs_nc_file, engine="h5netcdf", decode_coords='all', chunks={'y': -1, 'x': -1})
             # List of variables to keep
             if 'Rrs_B1' in ds.variables:
                 variables_to_keep = bands
@@ -1210,7 +1253,7 @@ class GRS:
                 variables_to_drop = [var for var in ds.variables if var not in variables_to_keep]
                 grs = ds.drop_vars(variables_to_drop)
         elif grs_version == 'v20':
-            ds = xr.open_dataset(grs_nc_file, chunks={'y': -1, 'x': -1}, engine="netcdf4")
+            ds = xr.open_dataset(grs_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf")
             waves = ds['Rrs']['wl']
             subset_dict = {band: ds['Rrs'].sel(wl=waves[i]).drop(['wl']) for i, band in enumerate(bands)}
             grs = xr.Dataset(subset_dict)
@@ -1218,8 +1261,9 @@ class GRS:
             self.log.error(f'GRS version {grs_version} not supported.')
             grs = None
             sys.exit(1)
+
         ds.close()
-        return grs
+        return grs, meta
 
     def param2tiff(self, ndarray_data, img_ref, output_img, no_data=0, gdal_driver_name="GTiff"):
 
@@ -1327,14 +1371,14 @@ class GRS:
         # Initialize the dict and fill it with zeros
         # This will be converted to a pd.DataFrame later
         pt_stats = {}
-        for band in d.grs_v20nc_s2bands.keys():
-            pt_stats[d.grs_v20nc_s2bands[band]] = {id:0.0 for id in self.gpd_feature_dict.keys()}
+        for band in self.grs_v20nc_s2bands.keys():
+            pt_stats[self.grs_v20nc_s2bands[band]] = {id:0.0 for id in self.gpd_feature_dict.keys()}
         
         # Declare a list to hold delayed tasks
         tasks = []
 
         # Create delayed tasks for each combination of band and shapefile point
-        for band in d.grs_v20nc_s2bands.keys():
+        for band in self.grs_v20nc_s2bands.keys():
             for id in self.gpd_feature_dict.keys():
                 # Get the shape feature
                 shp_feature = self.gpd_feature_dict[id]
@@ -1352,7 +1396,128 @@ class GRS:
 
         # Aggregate results into pt_stats
         for band, pt_id, mean_rrs in results:
-            pt_stats[d.grs_v20nc_s2bands[band]][pt_id] = mean_rrs
+            pt_stats[self.grs_v20nc_s2bands[band]][pt_id] = mean_rrs
         
         df = pd.DataFrame(pt_stats)
         return df
+
+
+class ACOLITE_S2:
+    """
+    Core functionalities to handle ACOLITE S2 files
+
+    Methods
+    -------
+    metadata(grs_file_entry)
+        Given a ACOLITE string element, return file metadata extracted from its name.
+    """
+
+    def __init__(self, parent_log=None):
+        if parent_log:
+            self.log = parent_log
+        else:
+            INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
+            logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
+            self.log = u.create_log_handler(logfile)
+
+        # import band names from Commons/DefaultDicts
+        self.acolite_nc_s2abands = d.acolite_nc_s2abands
+        self.acolite_nc_s2bbands = d.acolite_nc_s2bbands
+
+    @staticmethod
+    def metadata(aco_file_entry):
+        """
+        Given a ACOLITE file return metadata extracted from its name:
+
+        Parameters
+        ----------
+        @param aco_file_entry: str or pathlike obj that leads to the .nc file.
+
+        @return: metadata (dict) containing the extracted info, available keys are:
+            input_file, basename, mission, str_date, pydate, year, month, day, tile, product_type
+
+        Reference
+        ---------
+        Given the following file:
+        S2B_MSI_2024_06_06_14_45_27_T20LLQ_L2R.nc
+
+        S2A : (MMM) is the mission ID(S2A/S2B)
+        MSI : (MSI) is the sensor
+        2024_06_06 : (YYYY_MM_DD) Sensing date
+        14_45_27 : (??????) who knows?
+        T20LLQ : (Txxxxx) Tile Number
+        L2R : ACOLITE product type
+
+        Further reading:
+        Sentinel-2 MSI naming convention:
+        URL = https://sentinels.copernicus.eu/web/sentinel/user-guides/sentinel-2-msi/naming-convention
+        """
+        metadata = {}
+        basefile = os.path.basename(aco_file_entry)
+        splt = basefile.split('_')
+        if len(splt) == 10:
+            mission, sensor, yyyy, mm, dd, _, _, _, tile, aux = basefile.split('_')
+            prod_type, _ = aux.split('.')
+
+        date = yyyy+mm+dd
+        file_event_date = datetime.strptime(date, '%Y%m%d')
+
+        metadata['input_file'] = aco_file_entry
+        metadata['basename'] = basefile
+        metadata['mission'] = mission
+        metadata['str_date'] = date
+        metadata['pydate'] = file_event_date
+        metadata['year'] = yyyy
+        metadata['month'] = mm
+        metadata['day'] = dd
+        metadata['tile'] = tile
+        metadata['prod_type'] = prod_type
+
+        return metadata
+
+    def get_aco_dict(self, aco_nc_file):
+        """
+        Open ACOLITE netCDF files using xarray and dask, and return
+        a DataArray containing only the Rrs bands.
+
+        Parameters
+        ----------
+        @grs_nc_file: the path to the ACOLITE file
+
+        Returns
+        -------
+        @return aco: xarray.DataArray containing 11 Rrs bands.
+        The band names can be found at getpak.commons.DefaultDicts.aco_nc_s2*bands
+        """
+        # list of bands
+        meta = self.metadata(aco_nc_file)
+        # checking if Sentinel-2 A or B
+        if meta['mission'] == 'S2A':
+            bands = self.acolite_nc_s2abands
+        elif meta['mission'] == 'S2B':
+            bands = self.acolite_nc_s2bbands
+
+        # Opening the ACOLITE file
+        self.log.info(f'Opening ACOLITE file {aco_nc_file}')
+        ds = xr.open_dataset(aco_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf")
+        # Subsetting only the bands and renaming them to the naming convention, and dividing by pi (to Rrs) if L2R
+        if meta['prod_type'] == 'L2R':
+            adjbands = {key: f"rhos_{value}" for key, value in bands.items()}
+            subset_dict = {new_name: ds[var_name] / np.pi for new_name, var_name in adjbands.items()}
+        elif meta['prod_type'] == 'L2W':
+            if "Rrs_833" in ds.variables:
+                adjbands = {key: f"Rrs_{value}" for key, value in bands.items()}
+                subset_dict = {new_name: ds[var_name] for new_name, var_name in adjbands.items()}
+                meta['prod_type'] = 'Rrs'
+            else:
+                adjbands = {key: f"rhow_{value}" for key, value in bands.items()}
+                subset_dict = {new_name: ds[var_name] / np.pi for new_name, var_name in adjbands.items()}
+        else:
+            self.log.error(f'ACOLITE product not supported.')
+            aco = None
+            sys.exit(1)
+
+        aco = xr.Dataset(subset_dict)
+        ds.close()
+
+        return aco, meta

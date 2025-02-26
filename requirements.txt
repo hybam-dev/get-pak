@@ -1,5 +1,6 @@
 dask
 fiona
+h5netcdf
 numpy
 pandas
 xarray==2023.12.0

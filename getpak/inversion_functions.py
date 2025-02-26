@@ -284,6 +284,12 @@ def spm_jiang2021_red(Aerosol, Blue, Green, Red):
 
     return tss
 
+# SPM Alves e Santos 2024
+def spm_madeira(Red, Nir2):
+    spm = 945.1 * (Nir2 / Red) ^ 1.9463
+
+    return spm
+
 # SPM SEN3R
 def _spm_modis(Nir, Red):
     return 759.12 * ((Nir / Red) ** 1.92)
