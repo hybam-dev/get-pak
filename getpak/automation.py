@@ -23,7 +23,7 @@ class Pipelines:
         l2b_array = ifunc.spm_severo(b665=img['Rrs_B4'].values, b865=img['Rrs_B8A'].values)
 
         print(f'Saving L2B array to tiff file: {output_tif}')
-        grs.internal_ref_param2tiff(
+        grs.param2tiff(
             ndarray_data=l2b_array,
             tile_id=t_id,
             output_img=output_tif

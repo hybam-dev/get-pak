@@ -79,6 +79,18 @@ class Utils:
         return t_hour, t_min, t_sec, t_raw
 
     @staticmethod
+    def get_s2_tile_id(img_full_path):
+        if os.path.isfile(img_full_path):
+            img_parent_name = os.path.basename(Path(img_full_path))
+            sliced_ipn = img_parent_name.split('_')
+            tile_id = sliced_ipn[5][1:]
+            return tile_id
+        else:
+            print(f'File not found: {img_full_path}')
+            print(f'Returning None..')
+            return None
+
+    @staticmethod
     def repeat_to_length(s, wanted):
         return (s * (wanted // len(s) + 1))[:wanted]
 
@@ -508,17 +520,17 @@ class Utils:
 
 class DefaultDicts:
 
-    grs_v20nc_s2bands = {'Aerosol': 443,
-                        'Blue': 490,
-                        'Green': 560,
-                        'Red': 665,
-                        'RedEdge1': 705,
-                        'RedEdge2': 740,
-                        'RedEdge3': 783,
-                        'Nir1': 842,
-                        'Nir2': 865,
-                        'Swir1': 1610,
-                        'Swir2': 2190}
+    grs_v20nc_s2bands = {'Aerosol': 443,    # B1
+                        'Blue': 490,        # B2
+                        'Green': 560,       # B3
+                        'Red': 665,         # B4
+                        'RedEdge1': 705,    # B5
+                        'RedEdge2': 740,    # B6
+                        'RedEdge3': 783,    # B7
+                        'Nir1': 842,        # B8
+                        'Nir2': 865,        # B8a
+                        'Swir1': 1610,      # B11
+                        'Swir2': 2190}      # B12
 
     acolite_nc_s2abands = {'Aerosol': "443",
                          'Blue': "492",

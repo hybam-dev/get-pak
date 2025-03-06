@@ -318,7 +318,7 @@ def spm_s3(Red, Nir2, cutoff_value=0.027, cutoff_delta=0.007, low_params=None, h
     spm = (1 - transition_coef) * low + transition_coef * high
     return spm
 
-# SPM hibrid
+# SPM hybrid
 def spm_severo(Red, Nir2):
     if (Nir2 / Red) > 0.3:
         spm = 16.01 * 2.71828 ^ (4.99 * Nir2 / Red)
