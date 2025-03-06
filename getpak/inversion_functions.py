@@ -318,14 +318,31 @@ def spm_s3(Red, Nir2, cutoff_value=0.027, cutoff_delta=0.007, low_params=None, h
     spm = (1 - transition_coef) * low + transition_coef * high
     return spm
 
-# SPM hybrid
+## SPM hybrid
 def spm_severo(Red, Nir2):
-    if (Nir2 / Red) > 0.3:
-        spm = 16.01 * 2.71828 ^ (4.99 * Nir2 / Red)
-    else:
-        spm = (2719.8 * Nir2) / (1 - (Nir2 / 21.1)) + 2.08
+    # Ensure the inputs are numpy arrays (if not already)
+    Red = np.asarray(Red)
+    Nir2 = np.asarray(Nir2)
 
+    # Avoid divide-by-zero errors
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = Nir2 / Red
+
+        # Compute SPM values with vectorized operations
+        spm = np.where(
+            ratio > 0.3,
+            16.01 * np.exp(4.99 * ratio),  # Use np.exp instead of ^
+            (2719.8 * Nir2) / (1 - (Nir2 / 21.1)) + 2.08
+        )
     return spm
+
+# def spm_severo(Red, Nir2):
+#     if (Nir2 / Red) > 0.3:
+#         spm = 16.01 * 2.71828 ^ (4.99 * Nir2 / Red)
+#     else:
+#         spm = (2719.8 * Nir2) / (1 - (Nir2 / 21.1)) + 2.08
+#
+#     return spm
 
 # SPM Zhang et al. (2014)
 def spm_zhang2014(RedEdge1, a=362507, b=2.3222):

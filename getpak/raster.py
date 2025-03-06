@@ -20,9 +20,11 @@ from datetime import datetime
 from rasterstats import zonal_stats
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 
-from getpak.commons import Utils as u
+from getpak.commons import Utils
 from getpak.commons import DefaultDicts as d
 
+
+u=Utils()
 
 class Raster:
     """
@@ -51,12 +53,6 @@ class Raster:
         else:
             INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
             logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
-
-        # Import CRS projection information from /data/s2_proj_ref.json
-        s2projdata = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
-        with s2projdata.open('rb') as fp:
-            byte_content = fp.read()
-        self.s2projgrid = json.loads(byte_content)
 
         # Import OWT means for S2 MSI from /data/means_OWT_Spyrakos_S2A_B1-7.json
         means_owt = importlib_resources.files(__name__).joinpath('data/means_OWT_Spyrakos_S2A_B1-7.json')
@@ -203,37 +199,6 @@ class Raster:
                         resampling=Resampling.nearest)
         print(f'Done: {out_raster}')
         pass
-
-    @staticmethod
-    def s2proj_ref_builder(img_path_str):
-        """
-        Given a WaterDetect output .tif image
-        return GDAL information metadata
-        
-        Parameters
-        ----------
-        @param img_path_str: path to the image file
-
-        @return: tile_id (str) and ref (dict) containing the GDAL information
-        """
-        img_parent_name = os.path.basename(Path(img_path_str).parents[1])
-        sliced_ipn = img_parent_name.split('_') 
-        tile_id = sliced_ipn[5][1:]
-        # Get GDAL information from the template file
-        ref_data = gdal.Open(img_path_str)
-        mtx = ref_data.ReadAsArray()
-        trans = ref_data.GetGeoTransform()
-        proj = ref_data.GetProjection()
-        rows, cols = mtx.shape # return Y / X
-        ref = {
-            'trans': trans,
-            'proj': proj,
-            'rows': rows,
-            'cols': cols
-        }
-        #close GDAL image
-        del ref_data
-        return tile_id, ref
     
     @staticmethod
     def shp_stats(tif_file, shp_poly, keep_spatial=False, statistics='count min mean max median std'):
@@ -1265,12 +1230,18 @@ class GRS:
         ds.close()
         return grs, meta
 
-    def param2tiff(self, ndarray_data, img_ref, output_img, no_data=0, gdal_driver_name="GTiff"):
+    def param2tiff(self, ndarray_data, img_ref, output_img, no_data=0, gdal_driver_name="GTiff", resolve_internal_tile=None):
 
-        # Gather information from the template file
-        ref_data = gdal.Open(img_ref)
-        trans = ref_data.GetGeoTransform()
-        proj = ref_data.GetProjection()
+        if resolve_internal_tile:
+            tile_metadata = u.get_tile_s2_projection(resolve_internal_tile)
+            trans = tile_metadata['trans']
+            proj = tile_metadata['proj']
+        else:
+            # Gather information from the template file
+            ref_data = gdal.Open(img_ref)
+            trans = ref_data.GetGeoTransform()
+            proj = ref_data.GetProjection()
+
         # nodatav = 0 #data.GetNoDataValue()
         # Create file using information from the template
         outdriver = gdal.GetDriverByName(gdal_driver_name)  # http://www.gdal.org/gdal_8h.html

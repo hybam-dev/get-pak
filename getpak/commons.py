@@ -8,6 +8,7 @@ import subprocess
 import shutil
 import numpy as np
 import fnmatch
+import importlib_resources
 from pathlib import Path
 from PIL import Image
 
@@ -16,12 +17,16 @@ try:
 except:
     print("Unable to import osgeo! GETpak can still operate but critical functions may fail.")
 
-
 class Utils:
 
     def __init__(self, parent_log=None):
         if parent_log:
             self.log = parent_log
+        # Import CRS projection information from /data/s2_proj_ref.json
+        s2proj_binary_data = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
+        with s2proj_binary_data.open('rb') as fp:
+            byte_content = fp.read()
+        self.s2projgrid = json.loads(byte_content)
 
     @staticmethod
     def print_logo():
@@ -64,6 +69,14 @@ class Utils:
 
         return logger
 
+    def get_tile_s2_projection(self, tile_id):
+        """
+        return: A dictionary with proj data for tile_id
+        usage: Type the tile_id without the leading 'T'
+        example: tile_id=12ABC and not T12ABC
+        """
+        return self.s2projgrid[tile_id]
+
     @staticmethod
     def tic():
         global _start_time
@@ -89,6 +102,37 @@ class Utils:
             print(f'File not found: {img_full_path}')
             print(f'Returning None..')
             return None
+
+    @staticmethod
+    def s2proj_ref_builder(img_path_str):
+        """
+        Given a WaterDetect output .tif image
+        return GDAL information metadata
+
+        Parameters
+        ----------
+        @param img_path_str: path to the image file
+
+        @return: tile_id (str) and ref (dict) containing the GDAL information
+        """
+        img_parent_name = os.path.basename(Path(img_path_str).parents[1])
+        sliced_ipn = img_parent_name.split('_')
+        tile_id = sliced_ipn[5][1:]
+        # Get GDAL information from the template file
+        ref_data = gdal.Open(img_path_str)
+        mtx = ref_data.ReadAsArray()
+        trans = ref_data.GetGeoTransform()
+        proj = ref_data.GetProjection()
+        rows, cols = mtx.shape  # return Y / X
+        ref = {
+            'trans': trans,
+            'proj': proj,
+            'rows': rows,
+            'cols': cols
+        }
+        # close GDAL image
+        del ref_data
+        return tile_id, ref
 
     @staticmethod
     def repeat_to_length(s, wanted):
