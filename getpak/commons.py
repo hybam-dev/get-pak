@@ -17,16 +17,17 @@ try:
 except:
     print("Unable to import osgeo! GETpak can still operate but critical functions may fail.")
 
+
 class Utils:
 
     def __init__(self, parent_log=None):
         if parent_log:
             self.log = parent_log
-        # Import CRS projection information from /data/s2_proj_ref.json
-        s2proj_binary_data = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
-        with s2proj_binary_data.open('rb') as fp:
-            byte_content = fp.read()
-        self.s2projgrid = json.loads(byte_content)
+            # Import CRS projection information from /data/s2_proj_ref.json
+            s2proj_binary_data = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
+            with s2proj_binary_data.open('rb') as fp:
+                byte_content = fp.read()
+            self.s2projgrid = json.loads(byte_content)
 
     @staticmethod
     def print_logo():
@@ -404,135 +405,6 @@ class Utils:
 
         mtx_intersect = np.where((mtx_a == mtx_b), mtx_a, 0)
         return mtx_intersect
-
-    @staticmethod
-    def sch_date_matchups(fst_dates, snd_dates, fst_tile_list, snd_tile_list):
-        """
-        Function to search for the matchup dates of two sets of images given two sets of dates.
-        This function also writes the directories of the matchups for each date
-
-        Parameters
-        ----------
-        fst_dates: list of dates of the first set of images
-        snd_dates: list of dates of the second set of images
-        fst_tile_list: list of the path to the first set of images
-        snd_tile_list: list of the path to the first set of images
-
-        Returns
-        -------
-        matches, str_matches: Two dicts which the keys are the matchups dates, and the values are the paths to the images of the matchups
-        # hardcoded to write for GRS and WD folders
-        dates: list of the matchup dates
-        """
-        matches = {}
-        str_matches = {}  # STR dict to avoid -> TypeError: Object of type PosixPath is not JSON serializable
-        dates = []
-        for n, date in enumerate(fst_dates):
-            arr_index = np.where(np.array(snd_dates) == date)[0]
-            if len(arr_index) > 0:
-                matches[date] = {'GRS': fst_tile_list[n], 'WD': snd_tile_list[arr_index[0]]}
-                str_matches[date] = {'GRS': str(fst_tile_list[n]),
-                                     'WD': str(snd_tile_list[arr_index[0]])}  # redundant backup
-                dates.append(date)
-
-        return matches, str_matches, dates
-
-    def rename_waterdetect_masks(self, input_folder, output_folder):
-        """
-        Function to find all waterdetect water masks in a folder, get their dates, and copy only the water masks to a
-        # new folder with a new name. This function also writes the path of the water masks for each date
-
-        Parameters
-        ----------
-        input_folder: folder where the waterdetect masks are
-        output_folder
-
-        Returns
-        -------
-        wd_dates: list of dates of the water masks
-        wd_masks_list: list of the path to water masks
-        """
-        from pathlib import Path
-        import shutil
-        wd_dates, wd_masks_list = [], []
-        for root, dirs, files in os.walk(input_folder, topdown=False):
-            for name in files:
-                if name.endswith('.tif') and '_water_mask' in name:
-                    f = Path(os.path.join(root, name))
-                    newname = f.parent.parent.name + '_water_mask.tif'
-                    dest_plus_name = os.path.join(output_folder, newname)
-                    # copying to new folder
-                    shutil.copyfile(f, dest_plus_name)
-                    # print(f'COPYING: {f} TO: {dest_plus_name}\n')
-                    # appending the date and path
-                    nome = f.parent.parent.name.split(
-                        '_')  # check because for MAJA the dates are in position 2, while for other products it is 3
-                    date = nome[1][0:8] if nome[1][0] == '2' else nome[2][0:8]
-                    wd_dates.append(date)
-                    wd_masks_list.append(Path(dest_plus_name))
-
-        print(f'Copied {len(wd_masks_list)} water masks to: {output_folder}\n')
-
-        return wd_dates, wd_masks_list
-
-    def copy_waterdetect_invalidmasks(self, input_folder, output_folder):
-        """
-        Function to find all invalid masks from waterdetect in a folder, get their dates, and copy them to a
-        # new folder with a new name. This function also writes the path of the water masks for each date
-
-        Parameters
-        ----------
-        input_folder: folder where the waterdetect masks are
-        output_folder
-
-        Returns
-        -------
-        wd_dates: list of dates of the invalid masks
-        wd_masks_list: list of the path to the invalid masks
-        """
-        from pathlib import Path
-        import shutil
-        wd_masks_list = []
-        for root, dirs, files in os.walk(input_folder, topdown=False):
-            for name in files:
-                if name.endswith('.tif') and '_invalid_mask' in name:
-                    f = Path(os.path.join(root, name))
-                    dest_plus_name = os.path.join(output_folder, name)
-                    # copying to new folder
-                    shutil.copyfile(f, dest_plus_name)
-                    wd_masks_list.append(Path(dest_plus_name))
-
-        print(f'Copied {len(wd_masks_list)} invalid masks to: {output_folder}\n')
-
-        return wd_masks_list
-
-    def list_waterdetect_masks(self, input_folder):
-        """
-        This function finds all renamed waterdetect water masks (from function rename_waterdetect_masks) in a folder,
-        getting their dates and paths
-
-        Parameters
-        ----------
-        input_folder: folder where the waterdetect masks are
-
-        Returns
-        -------
-        wd_dates: list of dates of the water masks
-        wd_masks_list: list of the path to water masks
-        """
-        from pathlib import Path
-        wd_dates, wd_masks_list = [], []
-        for file in os.listdir(input_folder):
-            if file.endswith('.tif') and '_water_mask' in file:
-                f = Path(os.path.join(input_folder, file))
-                # appending the date and path
-                nome = file.split(
-                    '_')  # check because for MAJA the dates are in position 2, while for other products it is 3
-                date = nome[1][0:8] if nome[1][0] == '2' else nome[2][0:8]
-                wd_dates.append(date)
-                wd_masks_list.append(f)
-
-        return wd_dates, wd_masks_list
 
     @staticmethod
     def find_outliers_IQR(values):
