@@ -14,7 +14,7 @@ from rasterstats import zonal_stats
 from dask.distributed import Client as dkClient, LocalCluster
 
 # GET-Pak imports
-from input import GRS
+from getpak.input import GRS
 from getpak.commons import DefaultDicts as dd
 
 
