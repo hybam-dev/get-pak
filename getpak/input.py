@@ -195,7 +195,7 @@ class GRS:
         """
         meta = self.metadata(grs_nc_file)
         # list of bands
-        bands = self.grs_v20nc_s2bands
+        bands = dd.grs_v20nc_s2bands
         # self.log.info(f'Opening GRS version {grs_version} file {grs_nc_file}')
         if grs_version == 'v15':
             ds = xr.open_dataset(grs_nc_file, engine="h5netcdf", decode_coords='all', chunks={'y': -1, 'x': -1})
@@ -374,9 +374,9 @@ class ACOLITE_S2:
         meta = self.metadata(aco_nc_file)
         # checking if Sentinel-2 A or B
         if meta['mission'] == 'S2A':
-            bands = self.acolite_nc_s2abands
+            bands = dd.acolite_nc_s2abands
         elif meta['mission'] == 'S2B':
-            bands = self.acolite_nc_s2bbands
+            bands = dd.acolite_nc_s2bbands
 
         # Opening the ACOLITE file
         # self.log.info(f'Opening ACOLITE file {aco_nc_file}')
