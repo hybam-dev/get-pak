@@ -5,8 +5,11 @@ from getpak.commons import Utils as u
 grs = g()
 
 class Pipelines:
-    # def __int__(self):
-    #     print(f'mock: starting logger.')  # TODO: call logger from utils
+    
+    def __init__(self):
+        # GET-Pak settings
+        self.settings = u.read_config()
+        pass
 
     def run_l2b_algo(self, user_args):
         try:
@@ -34,3 +37,8 @@ class Pipelines:
 
         print('Done.')
         pass
+
+if __name__=='__main__':
+    p = Pipelines()
+    print(p.settings)
+    pass

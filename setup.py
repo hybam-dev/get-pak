@@ -20,7 +20,7 @@ setup(
         "Operating System :: OS Independent",
     ],
     package_data={
-        '': ['*.json'],
+        '': ['*.json', '*.ini'],
         'getpak': ['getpak/data/*']
         },
     include_package_data=True,

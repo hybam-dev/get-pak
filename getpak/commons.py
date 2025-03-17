@@ -9,8 +9,11 @@ import shutil
 import numpy as np
 import fnmatch
 import importlib_resources
-from pathlib import Path
+
 from PIL import Image
+from pathlib import Path
+from configparser import ConfigParser
+
 
 try:
     from osgeo import gdal, ogr, osr
@@ -51,6 +54,25 @@ class Utils:
                         ''')
 
         pass
+    
+    @staticmethod
+    def read_config():
+        config = ConfigParser()
+        # get the path to config.ini
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'settings.ini')
+        # check if the path is to a valid file
+        if not os.path.isfile(config_path):
+            print(f'Error: config file not found at {config_path}')
+            sys.exit(1)
+
+        # read the config file
+        config.read(config_path)
+
+        config_dict = {}
+        for section in config.sections():
+            # Convert section to a dictionary
+            config_dict[section] = dict(config[section])
+        return config_dict
 
     @staticmethod
     def create_log_handler(fname):
