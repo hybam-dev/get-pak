@@ -1,5 +1,19 @@
+import os
+import json
+import psutil
+import rasterio
+import numpy as np
 import importlib_resources
 
+from osgeo import gdal
+from pathlib import Path
+from dask.distributed import Client as dkClient, LocalCluster
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+
+# GET-Pak imports
+from getpak.commons import Utils
+
+u = Utils()
 
 class Raster:
     """
@@ -48,6 +62,54 @@ class Raster:
             cluster = LocalCluster(n_workers=4, memory_limit=str(limit / 4) + 'GB')
             client = dkClient(cluster)
 
+    def s2_to_tiff(self, ndarray_data, output_img, no_data=0, gdal_driver_name="GTiff",
+                   tile_id=None, img_ref=None):
+    ##TODO: improve resolution handling.
+    # Current dictionary only handles 20m (5490x5490),
+    # future versions should also handle 10m (10980x10980).
+        """
+        Given an input ndarray and destination to save the output,
+        generate a raster.tif using GDT_Float32.
+        """ 
+
+        if tile_id:
+            tile_metadata = u.get_tile_s2_projection(tile_id)
+            trans = tile_metadata['trans']
+            proj = tile_metadata['proj']
+        elif img_ref:
+            # Gather information from the template file
+            ref_data = gdal.Open(img_ref)
+            trans = ref_data.GetGeoTransform()
+            proj = ref_data.GetProjection()
+        else:
+            raise ValueError('Either tile_id or img_ref must be provided')
+
+        # nodatav = 0 #data.GetNoDataValue()
+        # Create file using information from the template
+        outdriver = gdal.GetDriverByName(gdal_driver_name)  # http://www.gdal.org/gdal_8h.html
+
+        [cols, rows] = ndarray_data.shape
+
+        print(f'Writing output .tiff')
+        # GDT_Byte = 1, GDT_UInt16 = 2, GDT_UInt32 = 4, GDT_Int32 = 5, GDT_Float32 = 6,
+        # options=['COMPRESS=PACKBITS'] -> https://gdal.org/drivers/raster/gtiff.html#creation-options
+        outdata = outdriver.Create(output_img, rows, cols, 1, gdal.GDT_Float32, options=['COMPRESS=PACKBITS'])
+        # Write the array to the file, which is the original array in this example
+        outdata.GetRasterBand(1).WriteArray(ndarray_data)
+        # Set a no data value if required
+        outdata.GetRasterBand(1).SetNoDataValue(no_data)
+        # Georeference the image
+        outdata.SetGeoTransform(trans)
+        # Write projection information
+        outdata.SetProjection(proj)
+
+        # Closing the files
+        # https://gdal.org/tutorials/raster_api_tut.html#using-create
+        # data = None
+        outdata = None
+        # self.log.info('')
+        pass
+
     @staticmethod
     def array2tiff(ndarray_data, str_output_file, transform, projection, no_data=-1, compression='COMPRESS=PACKBITS'):
         """
@@ -74,9 +136,8 @@ class Raster:
                            crs=projection,
                            transform=transform,
                            nodata=no_data,
-                           options=[compression]) as dst:
-            dst.write(ndarray_data, 1)
-
+                           options=[compression]) as file:
+            file.write(ndarray_data, 1)
         pass
 
     @staticmethod
@@ -189,75 +250,7 @@ class Raster:
         del ref_data
         return tile_id, ref
 
-    @staticmethod
-    def shp_stats(tif_file, shp_poly, keep_spatial=False, statistics='count min mean max median std'):
-        """
-        Given a single-band GeoTIFF file and a vector.shp return statistics inside the polygon.
 
-        Parameters
-        ----------
-        @param tif_file: path to raster.tif file.
-        @param shp_poly: path to the polygon.shp file.
-        @param keep_spatial (bool):
-            True = include the input shp_poly in the output as GeoJSON
-            False (default) = get only the mini_raster and statistics
-        @param statistics: what to extract from the shapes, available values are:
-
-        min, max, mean, count, sum, std, median, majority,
-        minority, unique, range, nodata, percentile.
-        https://pythonhosted.org/rasterstats/manual.html#zonal-statistics
-
-        @return: roi_stats (dict) containing the extracted statistics inside the region of interest.
-        """
-        # with fiona.open(shp_poly) as src:
-        #     roi_stats = zonal_stats(src,
-        #                             tif_file,
-        #                             stats=statistics,
-        #                             raster_out=True,
-        #                             all_touched=True,
-        #                             geojson_out=keep_spatial,
-        #                             band=1)
-        # # Original output comes inside a list containing only the output dict:
-        # return roi_stats[0]
-        roi_stats = zonal_stats(shp_poly,
-                                tif_file,
-                                stats=statistics,
-                                raster_out=True,
-                                all_touched=True,
-                                geojson_out=keep_spatial,
-                                band=1)
-        # Original output comes inside a list containing only the output dict:
-        return roi_stats[0]
-
-    @staticmethod
-    def extract_px(rasterio_rast, shapefile, rrs_dict, bands):
-        """
-        Given a dict of Rrs and a polygon, extract the values of pixels from each band
-
-        Parameters
-        ----------
-        rasterio_rast: a rasterio raster open with rasterio.open
-        shapefile: a polygon opened as geometry using fiona
-        rrs_dict: a dict containing the Rrs bands
-        bands: an array containing the bands of the rrs_dict to be extracted
-
-        Returns
-        -------
-        values: an array of dimension n, where n is the number of bands, containing the values inside the polygon
-        slice: the slice of the polygon (from the rasterio window)
-        mask_image: the rasterio mask
-        """
-        # rast = rasterio_rast.read(1)
-        mask_image, _, window_image = rasterio.mask.raster_geometry_mask(rasterio_rast, [shapefile], crop=True)
-        slices = window_image.toslices()
-        values = []
-        for band in bands:
-            # subsetting the xarray dataset
-            subset_data = rrs_dict[band].isel(x=slices[1], y=slices[0])
-            # Extract values where mask_image is False
-            values.append(subset_data.where(~mask_image).values.flatten())
-
-        return values, slices, mask_image
 
     @staticmethod
     def extract_function_px(rasterio_rast, shapefiles, data_matrix, fun='median', min_px=6):

@@ -1,5 +1,5 @@
 import getpak.inversion_functions as ifunc
-from getpak.raster import GRS as g
+from getpak.input import GRS as g
 from getpak.commons import Utils as u
 
 grs = g()

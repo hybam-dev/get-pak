@@ -1,4 +1,21 @@
+import os
+import sys
+import json
+import psutil
+import rasterio
+import numpy as np
+import pandas as pd
+import xarray as xr
+import importlib_resources
 
+from dask import compute
+from dask import delayed
+from rasterstats import zonal_stats
+from dask.distributed import Client as dkClient, LocalCluster
+
+# GET-Pak imports
+from input import GRS
+from getpak.commons import DefaultDicts as dd
 
 
 class Methods:
@@ -65,6 +82,135 @@ class Methods:
             # starting dask
             cluster = LocalCluster(n_workers=4, memory_limit=str(limit / 4) + 'GB')
             client = dkClient(cluster)
+    
+    @staticmethod
+    def shp_stats(tif_file, shp_poly, keep_spatial=False, statistics='count min mean max median std'):
+        """
+        Given a single-band GeoTIFF file and a vector.shp return statistics inside the polygon.
+
+        Parameters
+        ----------
+        @param tif_file: path to raster.tif file.
+        @param shp_poly: path to the polygon.shp file.
+        @param keep_spatial (bool):
+            True = include the input shp_poly in the output as GeoJSON
+            False (default) = get only the mini_raster and statistics
+        @param statistics: what to extract from the shapes, available values are:
+
+        min, max, mean, count, sum, std, median, majority,
+        minority, unique, range, nodata, percentile.
+        https://pythonhosted.org/rasterstats/manual.html#zonal-statistics
+
+        @return: roi_stats (dict) containing the extracted statistics inside the region of interest.
+        """
+        # with fiona.open(shp_poly) as src:
+        #     roi_stats = zonal_stats(src,
+        #                             tif_file,
+        #                             stats=statistics,
+        #                             raster_out=True,
+        #                             all_touched=True,
+        #                             geojson_out=keep_spatial,
+        #                             band=1)
+        # # Original output comes inside a list containing only the output dict:
+        # return roi_stats[0]
+        roi_stats = zonal_stats(shp_poly,
+                                tif_file,
+                                stats=statistics,
+                                raster_out=True,
+                                all_touched=True,
+                                geojson_out=keep_spatial,
+                                band=1)
+        # Original output comes inside a list containing only the output dict:
+        return roi_stats[0]
+    
+    @staticmethod
+    def extract_px(rasterio_rast, shapefile, rrs_dict, bands):
+        """
+        Given a dict of Rrs and a polygon, extract the values of pixels from each band
+
+        Parameters
+        ----------
+        rasterio_rast: a rasterio raster open with rasterio.open
+        shapefile: a polygon opened as geometry using fiona
+        rrs_dict: a dict containing the Rrs bands
+        bands: an array containing the bands of the rrs_dict to be extracted
+
+        Returns
+        -------
+        values: an array of dimension n, where n is the number of bands, containing the values inside the polygon
+        slice: the slice of the polygon (from the rasterio window)
+        mask_image: the rasterio mask
+        """
+        # rast = rasterio_rast.read(1)
+        mask_image, _, window_image = rasterio.mask.raster_geometry_mask(rasterio_rast, [shapefile], crop=True)
+        slices = window_image.toslices()
+        values = []
+        for band in bands:
+            # subsetting the xarray dataset
+            subset_data = rrs_dict[band].isel(x=slices[1], y=slices[0])
+            # Extract values where mask_image is False
+            values.append(subset_data.where(~mask_image).values.flatten())
+
+        return values, slices, mask_image
+    
+    @staticmethod
+    def sample_grs_with_shp(grs_nc, vector_shp, grs_version='v20', unique_shp_key='id'):
+        '''
+        Given a GRS.nc file and a multi-feature vector.shp, extract the Rrs values for all GRS bands that
+        fall inside the vector.shp features.
+
+        Parameters
+        ----------
+        @grs_nc: the path to the GRS file
+        @vector_shp: the path to the shapefile
+        @grs_version: a string with GRS version ('v15' or 'v20' for version 2.0.5+)
+        @unique_shp_key: A unique key/column to identify each feature in the shapefile
+
+        Returns
+        -------
+        @return result: bla bla bla
+        '''
+        try:
+            # No need to print or log, the functions should handle it internally.
+            GRS.grs_dict = GRS.get_grs_dict(grs_nc, grs_version)
+            GRS.gpd_feature_dict = GRS._get_shp_features(vector_shp, unique_key=unique_shp_key)
+
+        except Exception as e:
+            # self.log.error(f'Error: {e}')
+            sys.exit(1)  # Exit program: 0 is success, 1 is failure
+
+        # Initialize the dict and fill it with zeros
+        # This will be converted to a pd.DataFrame later
+        pt_stats = {}
+        for band in GRS.grs_v20nc_s2bands.keys():
+            pt_stats[GRS.grs_v20nc_s2bands[band]] = {id: 0.0 for id in GRS.gpd_feature_dict.keys()}
+
+        # Declare a list to hold delayed tasks
+        tasks = []
+
+        # Create delayed tasks for each combination of band and shapefile point
+        for band in dd.grs_v20nc_s2bands.keys():
+            for id in dd.gpd_feature_dict.keys():
+                # Get the shape feature
+                shp_feature = dd.gpd_feature_dict[id]
+                # Create a delayed task
+                task = delayed(GRS._process_band_point)(band, shp_feature, shp_feature.crs, id)
+                tasks.append(task)
+
+        global counter
+        counter = 0
+        print(f'Processing {len(tasks)} tasks...')
+        # Compute all delayed dask-tasks
+        results = compute(*tasks)
+        print(f' {counter}')
+        print('Done.')
+
+        # Aggregate results into pt_stats
+        for band, pt_id, mean_rrs in results:
+            pt_stats[dd.grs_v20nc_s2bands[band]][pt_id] = mean_rrs
+
+        df = pd.DataFrame(pt_stats)
+        return df
 
     def _sam(self, rrs, single=False, sensor='S2MSI', mode='B1'):
         """
@@ -258,7 +404,7 @@ class Methods:
         class_spt = np.zeros(rrs_dict[bands[0]].shape, dtype='int32')
         class_shp = np.zeros((len(shapefiles)), dtype='int32')
         for i, shape in enumerate(shapefiles):
-            values, slices, mask = Raster.extract_px(rasterio_rast, shape, rrs_dict, bands)
+            values, slices, mask = self.extract_px(rasterio_rast, shape, rrs_dict, bands)
             # Verifying if there are more pixels than the minimum
             valid_pixels = np.isnan(values[0]) == False
             if np.count_nonzero(valid_pixels) >= min_px:

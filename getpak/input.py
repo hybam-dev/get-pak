@@ -1,27 +1,20 @@
 import os
 import sys
-import json
 import psutil
-# import logging
 import rasterio
 import rasterio.mask
-import importlib_resources
-
 import numpy as np
 import pandas as pd
 import xarray as xr
 import geopandas as gpd
 
 from osgeo import gdal
-from dask import delayed
-from dask.distributed import Client as dkClient, LocalCluster
-from pathlib import Path
 from datetime import datetime
-from rasterstats import zonal_stats
-from rasterio.warp import calculate_default_transform, reproject, Resampling
+from dask.distributed import Client as dkClient, LocalCluster
 
+# GET-Pak imports
 from getpak.commons import Utils
-from getpak.commons import DefaultDicts as d
+from getpak.commons import DefaultDicts as dd
 
 u = Utils()
 
@@ -114,7 +107,7 @@ class GRS:
         #     self.log = u.create_log_handler(logfile)
 
         # import band names from Commons/DefaultDicts
-        self.grs_v20nc_s2bands = d.grs_v20nc_s2bands
+        pass
 
     @staticmethod
     def metadata(grs_file_entry):
@@ -241,45 +234,6 @@ class GRS:
 
         return grs, meta, proj, trans
 
-    def param2tiff(self, ndarray_data, img_ref, output_img, no_data=0, gdal_driver_name="GTiff",
-                   resolve_internal_tile=None):
-
-        if resolve_internal_tile:
-            tile_metadata = u.get_tile_s2_projection(resolve_internal_tile)
-            trans = tile_metadata['trans']
-            proj = tile_metadata['proj']
-        else:
-            # Gather information from the template file
-            ref_data = gdal.Open(img_ref)
-            trans = ref_data.GetGeoTransform()
-            proj = ref_data.GetProjection()
-
-        # nodatav = 0 #data.GetNoDataValue()
-        # Create file using information from the template
-        outdriver = gdal.GetDriverByName(gdal_driver_name)  # http://www.gdal.org/gdal_8h.html
-
-        [cols, rows] = ndarray_data.shape
-
-        print(f'Writing output .tiff')
-        # GDT_Byte = 1, GDT_UInt16 = 2, GDT_UInt32 = 4, GDT_Int32 = 5, GDT_Float32 = 6,
-        # options=['COMPRESS=PACKBITS'] -> https://gdal.org/drivers/raster/gtiff.html#creation-options
-        outdata = outdriver.Create(output_img, rows, cols, 1, gdal.GDT_Float32, options=['COMPRESS=PACKBITS'])
-        # Write the array to the file, which is the original array in this example
-        outdata.GetRasterBand(1).WriteArray(ndarray_data)
-        # Set a no data value if required
-        outdata.GetRasterBand(1).SetNoDataValue(no_data)
-        # Georeference the image
-        outdata.SetGeoTransform(trans)
-        # Write projection information
-        outdata.SetProjection(proj)
-
-        # Closing the files
-        # https://gdal.org/tutorials/raster_api_tut.html#using-create
-        # data = None
-        outdata = None
-        # self.log.info('')
-        pass
-
     def _get_shp_features(self, shp_file, unique_key='id', grs_crs='EPSG:32720'):
         '''
         INTERNAL FUNCTION
@@ -310,6 +264,7 @@ class GRS:
         return feature_dict
 
     # Internal function to paralelize the process of each band and point
+    # TODO: improve documentation
     def _process_band_point(self, band, shp_feature, crs, pt_id):
         """
         INTERNAL FUNCTION
@@ -325,64 +280,6 @@ class GRS:
         counter += 1
         mean_rrs = clipped_rrs.mean().compute().data.item()
         return (band, pt_id, mean_rrs)
-
-    def sample_grs_with_shp(self, grs_nc, vector_shp, grs_version='v20', unique_shp_key='id'):
-        '''
-        Given a GRS.nc file and a multi-feature vector.shp, extract the Rrs values for all GRS bands that
-        fall inside the vector.shp features.
-
-        Parameters
-        ----------
-        @grs_nc: the path to the GRS file
-        @vector_shp: the path to the shapefile
-        @grs_version: a string with GRS version ('v15' or 'v20' for version 2.0.5+)
-        @unique_shp_key: A unique key/column to identify each feature in the shapefile
-
-        Returns
-        -------
-        @return result: bla bla bla
-        '''
-        try:
-            # No need to print or log, the functions should handle it internally.
-            self.grs_dict = self.get_grs_dict(grs_nc, grs_version)
-            self.gpd_feature_dict = self._get_shp_features(vector_shp, unique_key=unique_shp_key)
-
-        except Exception as e:
-            # self.log.error(f'Error: {e}')
-            sys.exit(1)  # Exit program: 0 is success, 1 is failure
-
-        # Initialize the dict and fill it with zeros
-        # This will be converted to a pd.DataFrame later
-        pt_stats = {}
-        for band in self.grs_v20nc_s2bands.keys():
-            pt_stats[self.grs_v20nc_s2bands[band]] = {id: 0.0 for id in self.gpd_feature_dict.keys()}
-
-        # Declare a list to hold delayed tasks
-        tasks = []
-
-        # Create delayed tasks for each combination of band and shapefile point
-        for band in self.grs_v20nc_s2bands.keys():
-            for id in self.gpd_feature_dict.keys():
-                # Get the shape feature
-                shp_feature = self.gpd_feature_dict[id]
-                # Create a delayed task
-                task = delayed(self._process_band_point)(band, shp_feature, shp_feature.crs, id)
-                tasks.append(task)
-
-        global counter
-        counter = 0
-        print(f'Processing {len(tasks)} tasks...')
-        # Compute all delayed tasks
-        results = dask.compute(*tasks)
-        print(f' {counter}')
-        print('Done.')
-
-        # Aggregate results into pt_stats
-        for band, pt_id, mean_rrs in results:
-            pt_stats[self.grs_v20nc_s2bands[band]][pt_id] = mean_rrs
-
-        df = pd.DataFrame(pt_stats)
-        return df
 
 
 class ACOLITE_S2:
@@ -404,8 +301,8 @@ class ACOLITE_S2:
         #     self.log = u.create_log_handler(logfile)
 
         # import band names from Commons/DefaultDicts
-        self.acolite_nc_s2abands = d.acolite_nc_s2abands
-        self.acolite_nc_s2bbands = d.acolite_nc_s2bbands
+        self.acolite_nc_s2abands = dd.acolite_nc_s2abands
+        self.acolite_nc_s2bbands = dd.acolite_nc_s2bbands
 
     @staticmethod
     def metadata(aco_file_entry):
