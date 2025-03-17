@@ -8,7 +8,7 @@ short_description = 'Sentinel-2 and 3 raster and vector manipulation and validat
 setup(
     name=__package__,
     version=__version__,
-    url='https://github.com/daviguima/get-pak',
+    url='https://github.com/hybam-dev/get-pak',
     packages=find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",

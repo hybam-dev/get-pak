@@ -57,6 +57,7 @@ class Input:
             S2MSI for Sentinel-2 MSI A and B
             S3OLCI for Sentinel-3 OLCI A and B
         @AC_processor: a string of the AC processor, one of ACOLITE, GRS or SeaDAS
+        @grs_version: a string with the GRS version ('v15', 'v20' for version 2.0.5, 'v21' for version 2.1.6+)
 
         Returns
         -------
@@ -233,7 +234,7 @@ class GRS:
         ds.close()
 
         return grs, meta, proj, trans
-
+ 
     def _get_shp_features(self, shp_file, unique_key='id', grs_crs='EPSG:32720'):
         '''
         INTERNAL FUNCTION

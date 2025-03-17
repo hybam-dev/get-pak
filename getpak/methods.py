@@ -1199,8 +1199,9 @@ class Methods:
 
     def intersect_watermask(self, rrs_dict, water_mask_dir):
         """
-        Function to find all invalid masks from waterdetect in a folder, get their dates, and copy them to a
-        # new folder with a new name. This function also writes the path of the water masks for each date
+        Find all invalid masks from WaterDetect in a folder, get their dates,
+        and copy them to a new folder with a new name. Also writes the path 
+        of the water masks for each date
 
         Parameters
         ----------
