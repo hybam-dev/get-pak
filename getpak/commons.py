@@ -5,7 +5,6 @@ import json
 import logging
 import zipfile
 import subprocess
-import shutil
 import numpy as np
 import fnmatch
 import importlib_resources
@@ -26,11 +25,11 @@ class Utils:
     def __init__(self, parent_log=None):
         if parent_log:
             self.log = parent_log
-            # Import CRS projection information from /data/s2_proj_ref.json
-            s2proj_binary_data = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
-            with s2proj_binary_data.open('rb') as fp:
-                byte_content = fp.read()
-            self.s2projgrid = json.loads(byte_content)
+        # Import CRS projection information from /data/s2_proj_ref.json
+        s2proj_binary_data = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
+        with s2proj_binary_data.open('rb') as fp:
+            byte_content = fp.read()
+        self.s2projgrid = json.loads(byte_content)
 
     @staticmethod
     def print_logo():

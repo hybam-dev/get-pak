@@ -1,5 +1,6 @@
 import getpak.inversion_functions as ifunc
 from getpak.input import GRS as g
+from getpak.output import Raster as r
 from getpak.commons import Utils as u
 
 grs = g()
@@ -25,14 +26,14 @@ class Pipelines:
 
         print(f'Running L2B algorithm for tile ID: {t_id}') # TODO: dynamic call to L2B algorithm
         red, nir2 = img[0]['Red'].values, img[0]['Nir2'].values
-        l2b_array = ifunc.spm_severo(Red=red, Nir2=nir2)
+        # l2b_array = ifunc.spm_severo(Red=red, Nir2=nir2)
+        l2b_array = ifunc.vectorized_spm_sev(Red=red, Nir2=nir2)
 
         print(f'Saving L2B array to tiff file: {output_tif}')
-        grs.param2tiff(
+        r.s2_to_tiff(
             ndarray_data=l2b_array,
-            img_ref=None,
-            output_img=output_tif,
-            resolve_internal_tile=t_id
+            output_img=output_tif,            
+            tile_id=t_id
         )
 
         print('Done.')

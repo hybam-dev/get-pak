@@ -62,7 +62,8 @@ class Raster:
             cluster = LocalCluster(n_workers=4, memory_limit=str(limit / 4) + 'GB')
             client = dkClient(cluster)
 
-    def s2_to_tiff(self, ndarray_data, output_img, no_data=0, gdal_driver_name="GTiff",
+    @staticmethod
+    def s2_to_tiff(ndarray_data, output_img, no_data=0, gdal_driver_name="GTiff",
                    tile_id=None, img_ref=None):
     ##TODO: improve resolution handling.
     # Current dictionary only handles 20m (5490x5490),

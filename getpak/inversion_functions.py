@@ -327,6 +327,21 @@ def spm_severo(Red, Nir2):
 
     return spm
 
+def vectorized_spm_sev(Red, Nir2):
+    # Ensure the inputs are numpy arrays (if not already)
+    Red = np.asarray(Red)
+    Nir2 = np.asarray(Nir2)
+    # Avoid divide-by-zero errors
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = Nir2 / Red
+        # Compute SPM values with vectorized operations
+        spm = np.where(
+            ratio > 0.3,
+            16.01 * np.exp(4.99 * ratio),  # Use np.exp instead of ^
+            (2719.8 * Nir2) / (1 - (Nir2 / 21.1)) + 2.08
+        )
+    return spm
+
 # SPM Zhang et al. (2014)
 def spm_zhang2014(RedEdge1, a=362507, b=2.3222):
     spm = a * (RedEdge1 ** b)
