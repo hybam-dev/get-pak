@@ -15,8 +15,8 @@ import numpy as np
 
 #### CDOM ####
 # Brezonik et al. 2005
-def cdom_brezonik(Blue, RedEdg2):
-    cdom = np.exp(1.872 - 0.830 * np.log(Blue / RedEdg2))
+def cdom_brezonik(Blue, RedEdge2):
+    cdom = np.exp(1.872 - 0.830 * np.log(Blue / RedEdge2))
     return cdom
 
 

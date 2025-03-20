@@ -1,5 +1,6 @@
 import os
 import sys
+import ast
 import time
 import json
 import logging
@@ -57,11 +58,12 @@ class Utils:
     @staticmethod
     def read_config():
         config = ConfigParser()
-        # get the path to config.ini
+        # get the path to config.ini in the root folder
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'settings.ini')
-        # check if the path is to a valid file
+        print(f'Atempting to read config file: {config_path}')
+        # check if the path points to a valid file
         if not os.path.isfile(config_path):
-            print(f'Error: config file not found at {config_path}')
+            print(f'Error: config file not found. Exiting...')
             sys.exit(1)
 
         # read the config file
@@ -71,7 +73,17 @@ class Utils:
         for section in config.sections():
             # Convert section to a dictionary
             config_dict[section] = dict(config[section])
+        print('Done.')
         return config_dict
+
+    @staticmethod
+    def parse_config_option(section, key):
+        config = Utils.read_config()
+        try:
+            return config[section][key]
+        except KeyError as e:
+            print(f'Error: missing argument: {e}')
+            return
 
     @staticmethod
     def create_log_handler(fname):
@@ -115,6 +127,9 @@ class Utils:
 
     @staticmethod
     def get_s2_tile_id(img_full_path):
+        """
+        Given the complete path to a GRS images.nc, return the tile ID
+        """
         if os.path.isfile(img_full_path):
             img_parent_name = os.path.basename(Path(img_full_path))
             sliced_ipn = img_parent_name.split('_')
