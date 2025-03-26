@@ -1118,7 +1118,8 @@ class Methods:
 
         return matches, str_matches, dates
 
-    def get_waterdetect_masks(self, input_folder, output_folder=None):
+    @staticmethod
+    def get_waterdetect_masks(input_folder, output_folder=None):
         """
         This function finds all WaterDetect water masks in a folder, getting their dates and paths. It also gives the
         option to rename the water masks from their original folder (outputs from the WaterDetect processing) to a new
@@ -1171,7 +1172,8 @@ class Methods:
 
         return wd_dates, wd_masks_list
 
-    def copy_waterdetect_invalidmasks(self, input_folder, output_folder):
+    @staticmethod
+    def copy_waterdetect_invalidmasks(input_folder, output_folder):
         """
         Function to find all invalid masks from waterdetect in a folder, get their dates, and copy them to a
         # new folder with a new name. This function also writes the path of the water masks for each date
@@ -1197,7 +1199,8 @@ class Methods:
 
         return None
 
-    def intersect_watermask(self, rrs_dict, water_mask_dir):
+    @staticmethod
+    def intersect_watermask(rrs_dict, water_mask_dir):
         """
         Find all invalid masks from WaterDetect in a folder, get their dates,
         and copy them to a new folder with a new name. Also writes the path 
