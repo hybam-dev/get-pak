@@ -8,7 +8,7 @@
 
 # Any bands can be used to compute the final value
 # Available bands in Sentinel2 are:
-# Aerosol, Blue, Green, Red, RedEdg1, RedEdg2, RedEdg3, Nir, Nir2, Mir, Mir2
+# Aerosol, Blue, Green, Red, RedEdge1, RedEdge2, RedEdge3, Nir, Nir2, Mir, Mir2
 
 import numpy as np
 
@@ -22,39 +22,39 @@ def cdom_brezonik(Blue, RedEdge2):
 
 #### Chlorophyll-a ####
 # 2-band ratio by Gilerson et al. (2010)
-def chl_gilerson2(Red, RedEdg1, a=0.022, b=1.124):
-    chl = (0.7864 * (RedEdg1 / Red) / a - 0.4245 / a) ** b
+def chl_gilerson2(Red, RedEdge1, a=0.022, b=1.124):
+    chl = (0.7864 * (RedEdge1 / Red) / a - 0.4245 / a) ** b
     return chl
 
 
 # 3-band ratio by Gilerson et al. (2010)
-def chl_gilerson3(Red, RedEdg1, RedEdg2, a=113.36, b=-16.45, c=1.124):
-    chl = (a * (RedEdg2 / (Red - RedEdg1)) + b) ** c
+def chl_gilerson3(Red, RedEdge1, RedEdge2, a=113.36, b=-16.45, c=1.124):
+    chl = (a * (RedEdge2 / (Red - RedEdge1)) + b) ** c
     return chl
 
 
 # Gitelson
-def chl_gitelson(Red, RedEdg1, RedEdg2):
-    chl = 23.1 + 117.4 * (1 / Red - 1 / RedEdg1) * RedEdg2
+def chl_gitelson(Red, RedEdge1, RedEdge2):
+    chl = 23.1 + 117.4 * (1 / Red - 1 / RedEdge1) * RedEdge2
     return chl
 
 
 # Gitelson and Kondratyev, Dall'Olmo et al. (2003)
-def chl_gitelson2(Red, RedEdg1, a=61.324, b=-37.94):
-    chl = a * (RedEdg1 / Red) + b
+def chl_gitelson2(Red, RedEdge1, a=61.324, b=-37.94):
+    chl = a * (RedEdge1 / Red) + b
     return chl
 
 
 # 2-band semi-analytical by Gons et al. (2003, 2005)
-def chl_gons(Red, RedEdg1, RedEdg3, a=1.063, b=0.016, aw665=0.40, aw708=0.70):
-    bb = 1.61 * RedEdg3 / (0.082 - 0.6 * RedEdg3)
-    chl = ((RedEdg1 / Red) * (aw708 + bb) - aw665 - bb ** a) / b
+def chl_gons(Red, RedEdge1, RedEdge3, a=1.063, b=0.016, aw665=0.40, aw708=0.70):
+    bb = 1.61 * RedEdge3 / (0.082 - 0.6 * RedEdge3)
+    chl = ((RedEdge1 / Red) * (aw708 + bb) - aw665 - bb ** a) / b
     return chl
 
 
 # 2-band squared band ration by Gurlin et al. (2011)
-def chl_gurlin(Red, RedEdg1, a=25.28, b=14.85, c=-15.18):
-    chl = (a * (RedEdg1 / Red) ** 2 + b * (RedEdg1 / Red) + c)
+def chl_gurlin(Red, RedEdge1, a=25.28, b=14.85, c=-15.18):
+    chl = (a * (RedEdge1 / Red) ** 2 + b * (RedEdge1 / Red) + c)
     return chl
 
 
@@ -77,8 +77,8 @@ def chl_h2(Red, RedEdge1, RedEdge2):
 
 
 # NDCI, Mishra and Mishra (2012)
-def chl_ndci(Red, RedEdg1, a=14.039, b=86.115, c=194.325):
-    index = (RedEdg1 - Red) / (RedEdg1 + Red)
+def chl_ndci(Red, RedEdge1, a=14.039, b=86.115, c=194.325):
+    index = (RedEdge1 - Red) / (RedEdge1 + Red)
     chl = (a + b * index + c * (index * index))
     return chl
 
