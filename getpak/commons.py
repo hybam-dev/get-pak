@@ -1,6 +1,5 @@
 import os
 import sys
-import ast
 import time
 import json
 import logging
@@ -13,7 +12,7 @@ import importlib_resources
 from PIL import Image
 from pathlib import Path
 from configparser import ConfigParser
-
+from osgeo import gdal, ogr, osr
 
 try:
     from osgeo import gdal, ogr, osr
@@ -23,14 +22,8 @@ except:
 
 class Utils:
 
-    def __init__(self, parent_log=None):
-        if parent_log:
-            self.log = parent_log
-        # Import CRS projection information from /data/s2_proj_ref.json
-        s2proj_binary_data = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
-        with s2proj_binary_data.open('rb') as fp:
-            byte_content = fp.read()
-        self.s2projgrid = json.loads(byte_content)
+    def __init__(self):
+        pass
 
     @staticmethod
     def print_logo():
@@ -109,7 +102,7 @@ class Utils:
         usage: Type the tile_id without the leading 'T'
         example: tile_id=12ABC and not T12ABC
         """
-        return self.s2projgrid[tile_id]
+        return s2projgrid[tile_id]
 
     @staticmethod
     def tic():
@@ -471,6 +464,38 @@ class Utils:
         return outliers, clean_array
 
 class DefaultDicts:
+
+    # Import CRS projection information from /data/s2_proj_ref.json
+    s2proj_binary_data = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
+    with s2proj_binary_data.open('rb') as fp:
+        byte_content = fp.read()
+
+    # Make dictionary available to modules
+    s2projgrid = json.loads(byte_content)
+
+    # Import OWT means for S2 MSI from /data/means_OWT_Spyrakos_S2A_B1-7.json
+    means_owt = importlib_resources.files(__name__).joinpath('data/means_OWT_Spyrakos_S2A_B1-7.json')
+    with means_owt.open('rb') as fp:
+        byte_content = fp.read()
+    owts_spy_S2_B1_7 = dict(json.loads(byte_content))
+
+    # Import OWT means for S2 MSI from /data/means_OWT_Spyrakos_S2A_B2-7.json
+    means_owt = importlib_resources.files(__name__).joinpath('data/means_OWT_Spyrakos_S2A_B2-7.json')
+    with means_owt.open('rb') as fp:
+        byte_content = fp.read()
+    owts_spy_S2_B2_7 = dict(json.loads(byte_content))
+
+    # Import OWT means for S2 MSI from /data/means_OWT_Cordeiro_S2A_SPM.json
+    means_owt = importlib_resources.files(__name__).joinpath('data/Means_OWT_Cordeiro_S2A_SPM.json')
+    with means_owt.open('rb') as fp:
+        byte_content = fp.read()
+    owts_spm_S2_B1_8A = dict(json.loads(byte_content))
+
+    # Import OWT means for S2 MSI from /data/means_OWT_Cordeiro_S2A_SPM_B2-8A.json
+    means_owt = importlib_resources.files(__name__).joinpath('data/Means_OWT_Cordeiro_S2A_SPM_B2-8A.json')
+    with means_owt.open('rb') as fp:
+        byte_content = fp.read()
+    owts_spm_S2_B2_8A = dict(json.loads(byte_content))
 
     grs_v20nc_s2bands = {'Aerosol': 443,    # B1
                         'Blue': 490,        # B2

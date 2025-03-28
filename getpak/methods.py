@@ -1,21 +1,20 @@
 import os
 import sys
-import json
-import psutil
 import rasterio
 import numpy as np
 import pandas as pd
 import xarray as xr
-import importlib_resources
 
-from dask import compute
-from dask import delayed
 from rasterstats import zonal_stats
-from dask.distributed import Client as dkClient, LocalCluster
 
-# GET-Pak imports
-from getpak.input import GRS
-from getpak.commons import DefaultDicts as dd
+from getpak import GRS
+from getpak import DefaultDicts as dd
+from getpak import compute
+from getpak import delayed
+from getpak import owts_spy_S2_B1_7
+from getpak import owts_spy_S2_B2_7
+from getpak import owts_spm_S2_B1_8A
+from getpak import owts_spm_S2_B2_8A 
 
 
 class Methods:
@@ -39,49 +38,8 @@ class Methods:
 
     """
 
-    def __init__(self, parent_log=None):
-        # if parent_log:
-        #     self.log = parent_log
-        # else:
-        #     INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
-        #     logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
-        #     self.log = u.create_log_handler(logfile)
-
-        # Import OWT means for S2 MSI from /data/means_OWT_Spyrakos_S2A_B1-7.json
-        means_owt = importlib_resources.files(__name__).joinpath('data/means_OWT_Spyrakos_S2A_B1-7.json')
-        with means_owt.open('rb') as fp:
-            byte_content = fp.read()
-        self.owts_spy_S2_B1_7 = dict(json.loads(byte_content))
-
-        # Import OWT means for S2 MSI from /data/means_OWT_Spyrakos_S2A_B2-7.json
-        means_owt = importlib_resources.files(__name__).joinpath('data/means_OWT_Spyrakos_S2A_B2-7.json')
-        with means_owt.open('rb') as fp:
-            byte_content = fp.read()
-        self.owts_spy_S2_B2_7 = dict(json.loads(byte_content))
-
-        # Import OWT means for S2 MSI from /data/means_OWT_Cordeiro_S2A_SPM.json
-        means_owt = importlib_resources.files(__name__).joinpath('data/Means_OWT_Cordeiro_S2A_SPM.json')
-        with means_owt.open('rb') as fp:
-            byte_content = fp.read()
-        self.owts_spm_S2_B1_8A = dict(json.loads(byte_content))
-
-        # Import OWT means for S2 MSI from /data/means_OWT_Cordeiro_S2A_SPM_B2-8A.json
-        means_owt = importlib_resources.files(__name__).joinpath('data/Means_OWT_Cordeiro_S2A_SPM_B2-8A.json')
-        with means_owt.open('rb') as fp:
-            byte_content = fp.read()
-        self.owts_spm_S2_B2_8A = dict(json.loads(byte_content))
-
-        # start dask with maximum of 16 GB of RAM
-        try:
-            dkClient.current()
-        except ValueError:
-            # total memory available
-            mem = int(0.75 * psutil.virtual_memory().total / (1024 * 1024 * 1024))
-            # memory limit
-            limit = 16 if mem > 16 else mem
-            # starting dask
-            cluster = LocalCluster(n_workers=4, memory_limit=str(limit / 4) + 'GB')
-            client = dkClient(cluster)
+    def __init__(self):
+        pass
     
     @staticmethod
     def shp_stats(tif_file, shp_poly, keep_spatial=False, statistics='count min mean max median std'):
@@ -234,9 +192,9 @@ class Methods:
         # Loading the correct OWTs
         if sensor == 'S2MSI':
             if mode == 'B1':
-                owts = self.owts_spy_S2_B1_7
+                owts = owts_spy_S2_B1_7
             else:
-                owts = self.owts_spy_S2_B2_7
+                owts = owts_spy_S2_B2_7
 
         # Convert OWT values to numpy array for vectorized computations
         M = np.array([list(val.values()) for val in owts.values()])
@@ -459,7 +417,7 @@ class Methods:
         class_px = np.zeros_like(rrs[bands[0]], dtype='uint8')
         # array of angles to limit the loop
         if sensor == 'S2MSI':
-            angles = np.zeros((len(nzero[0]), len(self.owts_spm_S2_B1_8A)), dtype='float16')
+            angles = np.zeros((len(nzero[0]), len(owts_spm_S2_B1_8A)), dtype='float16')
 
         # creating a new Band 1 by undoing the upsampling of GRS, keeping only the pixels entirely inside water
         if sensor == 'S2MSI' and B1:
@@ -474,9 +432,9 @@ class Methods:
         # Loading the correct dictionary of OWTs
         if sensor == 'S2MSI':
             if B1:
-                owts = self.owts_spm_S2_B1_8A
+                owts = owts_spm_S2_B1_8A
             else:
-                owts = self.owts_spm_S2_B2_8A
+                owts = owts_spm_S2_B2_8A
         # array of values of the OWTs
         M = np.array([list(val.values()) for val in owts.values()])
         for i in range(len(nzero[0])):
@@ -488,7 +446,7 @@ class Methods:
         # classified using only bands 2 to 7
         if sensor == 'S2MSI' and B1:
             nodata = np.where(np.isnan(angles[:, 0]))[0]
-            M = np.array([list(val.values()) for val in self.owts_spm_S2_B2_8A.values()])
+            M = np.array([list(val.values()) for val in owts_spm_S2_B2_8A.values()])
             for i in range(len(nodata)):
                 for j in range(len(M)):
                     # angles[nodata[i], j] = self._euclid_dist(pix[i, :], mode='B2')

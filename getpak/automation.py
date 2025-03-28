@@ -3,9 +3,9 @@ import ast
 import inspect
 
 import getpak.inversion_functions as ifunc
-from getpak.input import GRS as g
-from getpak.output import Raster as r
-from getpak.commons import Utils as u
+from getpak import GRS as g
+from getpak import Raster as r
+from getpak import Utils as u
 
 grs = g()
 

@@ -1,48 +1,22 @@
 import os
 import sys
-import psutil
 import rasterio
 import rasterio.mask
 import numpy as np
-import pandas as pd
 import xarray as xr
 import geopandas as gpd
 
-from osgeo import gdal
+from getpak import cluster
 from datetime import datetime
-from dask.distributed import Client as dkClient, LocalCluster
-
-# GET-Pak imports
-from getpak.commons import Utils
 from getpak.commons import DefaultDicts as dd
-
-u = Utils()
 
 
 class Input:
     """
     Core function to read any input images for processing with GET-Pak
     """
-
-    def __init__(self, parent_log=None):
-        # if parent_log:
-        #     self.log = parent_log
-        # else:
-        #     INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
-        #     logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
-        #     self.log = u.create_log_handler(logfile)
-
-        # start dask with maximum of 16 GB of RAM
-        try:
-            dkClient.current()
-        except ValueError:
-            # total memory available
-            mem = int(0.75 * psutil.virtual_memory().total / (1024 * 1024 * 1024))
-            # memory limit
-            limit = 16 if mem > 16 else mem
-            # starting dask
-            cluster = LocalCluster(n_workers=4, memory_limit=str(limit / 4) + 'GB')
-            client = dkClient(cluster)
+    def __init__(self):
+        pass
 
     def get_input_dict(self, file, sensor='S2MSI', AC_processor='GRS', grs_version=None):
         """
@@ -108,6 +82,7 @@ class GRS:
         #     self.log = u.create_log_handler(logfile)
 
         # import band names from Commons/DefaultDicts
+        self.client = cluster.ClusterManager.get_client
         pass
 
     @staticmethod
@@ -193,6 +168,7 @@ class GRS:
         @return grs: xarray.DataArray containing 11 Rrs bands.
         The band names can be found at getpak.commons.DefaultDicts.grs_v20nc_s2bands
         """
+        client = self.client()
         meta = self.metadata(grs_nc_file)
         # list of bands
         bands = dd.grs_v20nc_s2bands
@@ -232,7 +208,7 @@ class GRS:
             sys.exit(1)
 
         ds.close()
-
+        grs = client.persist(grs)
         return grs, meta, proj, trans
  
     def _get_shp_features(self, shp_file, unique_key='id', grs_crs='EPSG:32720'):

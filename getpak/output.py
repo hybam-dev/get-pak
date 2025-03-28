@@ -1,17 +1,15 @@
 import os
-import json
-import psutil
 import rasterio
 import numpy as np
-import importlib_resources
 
-from osgeo import gdal
+from getpak import gdal
 from pathlib import Path
 from dask.distributed import Client as dkClient, LocalCluster
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 
 # GET-Pak imports
-from getpak.commons import Utils
+from getpak import s2projgrid
+from getpak import Utils
 
 u = Utils()
 
@@ -37,30 +35,7 @@ class Raster:
     """
 
     def __init__(self, parent_log=None):
-        # if parent_log:
-        #     self.log = parent_log
-        # else:
-        #     INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
-        #     logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
-        #     self.log = u.create_log_handler(logfile)
-
-        # Import CRS projection information from /data/s2_proj_ref.json
-        s2projdata = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')
-        with s2projdata.open('rb') as fp:
-            byte_content = fp.read()
-        self.s2projgrid = json.loads(byte_content)
-
-        # start dask with maximum of 16 GB of RAM
-        try:
-            dkClient.current()
-        except ValueError:
-            # total memory available
-            mem = int(0.75 * psutil.virtual_memory().total / (1024 * 1024 * 1024))
-            # memory limit
-            limit = 16 if mem > 16 else mem
-            # starting dask
-            cluster = LocalCluster(n_workers=4, memory_limit=str(limit / 4) + 'GB')
-            client = dkClient(cluster)
+        pass
 
     @staticmethod
     def s2_to_tiff(ndarray_data, output_img, no_data=0, gdal_driver_name="GTiff",
