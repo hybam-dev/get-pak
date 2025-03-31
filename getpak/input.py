@@ -8,7 +8,7 @@ import geopandas as gpd
 
 from getpak import cluster
 from datetime import datetime
-from getpak.commons import DefaultDicts as dd
+from getpak import DefaultDicts as dd
 
 
 class Input:

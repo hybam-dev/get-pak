@@ -13,6 +13,7 @@ from PIL import Image
 from pathlib import Path
 from configparser import ConfigParser
 from osgeo import gdal, ogr, osr
+from getpak import DefaultDicts as dd
 
 try:
     from osgeo import gdal, ogr, osr
@@ -102,7 +103,7 @@ class Utils:
         usage: Type the tile_id without the leading 'T'
         example: tile_id=12ABC and not T12ABC
         """
-        return s2projgrid[tile_id]
+        return dd.s2projgrid[tile_id]
 
     @staticmethod
     def tic():
