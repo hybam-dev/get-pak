@@ -2,13 +2,13 @@ import os
 import rasterio
 import numpy as np
 
-from getpak import gdal
+from osgeo import gdal
 from pathlib import Path
 from dask.distributed import Client as dkClient, LocalCluster
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 
 # GET-Pak imports
-from getpak import Utils
+from commons import Utils
 
 u = Utils()
 
