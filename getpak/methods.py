@@ -7,10 +7,10 @@ import xarray as xr
 
 from rasterstats import zonal_stats
 
-from getpak import GRS
-from getpak import DefaultDicts as dd
-from getpak import compute
-from getpak import delayed
+from getpak.input import GRS
+from getpak.commons import DefaultDicts as dd
+from dask import compute
+from dask import delayed
 from getpak import owts_spy_S2_B1_7
 from getpak import owts_spy_S2_B2_7
 from getpak import owts_spm_S2_B1_8A

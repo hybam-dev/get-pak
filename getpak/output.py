@@ -8,7 +8,7 @@ from dask.distributed import Client as dkClient, LocalCluster
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 
 # GET-Pak imports
-from commons import Utils
+from getpak.commons import Utils
 
 u = Utils()
 
