@@ -304,7 +304,7 @@ class Methods:
         class_px = np.zeros_like(rrs[bands[0]], dtype='uint8')
         # array of angles to limit the loop
         if sensor == 'S2MSI':
-            angles = np.zeros((len(nzero[0]), len(self.owts_spy_S2_B1_7)), dtype='float16')
+            angles = np.zeros((len(nzero[0]), len(owts_spy_S2_B1_7)), dtype='float16')
 
         # creating a new Band 1 by undoing the upsampling of GRS, keeping only the pixels entirely inside water
         if sensor == 'S2MSI' and B1:
@@ -527,7 +527,7 @@ class Methods:
         @cdom: an array, with the same size as the input bands, with the modeled values
         """
         import getpak.inversion_functions as ifunc
-        cdom = ifunc.cdom_brezonik(Blue=rrs_dict['Blue'].values, RedEdg2=rrs_dict['RedEdge2'].values)
+        cdom = ifunc.cdom_brezonik(Blue=rrs_dict['Blue'].values, RedEdge2=rrs_dict['RedEdge2'].values)
 
         # removing espurious values
         if isinstance(upper_lim, (int, float)) and isinstance(lower_lim, (int, float)):
@@ -571,7 +571,7 @@ class Methods:
             # index = np.where(np.isin(class_owt_spt, classes))
             # if len(index[0] > 0):
             #     chla[index] = ifunc.chl_gurlin(Red=rrs_dict['Red'].values[index],
-            #                                                             RedEdg1=rrs_dict['Rrs_B5'].values[index],
+            #                                                             RedEdge1=rrs_dict['Rrs_B5'].values[index],
             #                                                             a=86.09, b=-517.5, c=886.7)
             #     if limits:
             #         lims = [10, 1000]
@@ -582,8 +582,8 @@ class Methods:
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
                 chla[index] = ifunc.chl_gons(Red=rrs_dict['Red'].values[index],
-                                             RedEdg1=rrs_dict['RedEdge1'].values[index],
-                                             RedEdg3=rrs_dict['RedEdge3'].values[index],
+                                             RedEdge1=rrs_dict['RedEdge1'].values[index],
+                                             RedEdge3=rrs_dict['RedEdge3'].values[index],
                                              aw665=0.425, aw708=0.704)
                 if limits:
                     lims = [1, 250]
@@ -594,7 +594,7 @@ class Methods:
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
                 chla[index] = ifunc.chl_ndci(Red=rrs_dict['Red'].values[index],
-                                             RedEdg1=rrs_dict['RedEdge1'].values[index])
+                                             RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
                     lims = [5, 250]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
@@ -606,7 +606,7 @@ class Methods:
             index = np.where(conditions)
             if len(index[0] > 0):
                 chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
-                                                  RedEdg1=rrs_dict['RedEdge1'].values[index])
+                                                  RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
                     lims = [5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
@@ -616,7 +616,7 @@ class Methods:
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
                 chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
-                                                  RedEdg1=rrs_dict['RedEdge1'].values[index])
+                                                  RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
                     lims = [5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
@@ -626,8 +626,8 @@ class Methods:
             # index = np.where(np.isin(class_owt_spt, classes))
             # if len(index[0] > 0):
             #     chla[index] = ifunc.chl_gilerson3(Red=rrs_dict['Red'].values[index],
-            #                                       RedEdg1=rrs_dict['RedEdge1'].values[index],
-            #                                       RedEdg2=rrs_dict['RedEdge2'].values[index])
+            #                                       RedEdge1=rrs_dict['RedEdge1'].values[index],
+            #                                       RedEdge2=rrs_dict['RedEdge2'].values[index])
             #     if limits:
             #         lims = [10, 1000]
             #         out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
@@ -677,15 +677,15 @@ class Methods:
                     chla[index[0][out], index[1][out]] = np.nan
 
         elif alg == 'gons':
-            chla = ifunc.chl_gons(Red=rrs_dict['Red'].values, RedEdg1=rrs_dict['RedEdge1'].values,
-                                  RedEdg3=rrs_dict['RedEdge3'].values)
+            chla = ifunc.chl_gons(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values,
+                                  RedEdge3=rrs_dict['RedEdge3'].values)
             if limits:
                 lims = [1, 250]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
                 chla[out] = np.nan
 
         elif alg == 'ndci':
-            chla = ifunc.chl_ndci(Red=rrs_dict['Red'].values, RedEdg1=rrs_dict['RedEdge1'].values)
+            chla = ifunc.chl_ndci(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
             if limits:
                 lims = [5, 250]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
@@ -699,7 +699,7 @@ class Methods:
                 chla[out] = np.nan
 
         elif alg == 'gilerson2':
-            chla = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values, RedEdg1=rrs_dict['RedEdge1'].values)
+            chla = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
             if limits:
                 lims = [5, 500]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
@@ -847,7 +847,7 @@ class Methods:
             turb = ifunc.spm_nechad(Red=rrs_dict['Red'].values)
 
         elif alg == 'NechadGreen':
-            turb = ifunc.spm_nechad(Red=rrs_dict['Red'].values, a=228.72, c=0.2200)
+            turb = ifunc.spm_nechad(Red=rrs_dict['Green'].values, a=228.72, c=0.2200)
 
         elif alg == 'Binding':
             turb = ifunc.spm_binding2010(RedEdge2=rrs_dict['RedEdge2'].values)
