@@ -550,8 +550,8 @@ class Methods:
         @rrs_dict: rrs_dict: a xarray Dataset containing the Rrs bands
         @class_owt_spt: an array, with the same size as the input bands, with the OWT classes for each pixel
         @limits: boolean to choose whether to apply the algorithms only in their limits of cal/val
-        @alg: one the the following algorithms available:
-            owt: To use the methodology based on OWTs
+        @alg: one the following algorithms available:
+            owt: To use the methodology based on OWTs (Tavares et al., 2025)
             gilerson2: 2-band NIR-red ratio by Gilerson et al. (2010)
             gons: the 2-band semi-analytical by Gons et al. (2003, 2005)
             ndci: Normalised Difference Chlorophyll Index, Mishra and Mishra (2012)
@@ -676,11 +676,32 @@ class Methods:
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
 
+        elif alg == 'gilerson2':
+            chla = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
+            if limits:
+                lims = [5, 500]
+                out = np.where((chla < lims[0]) | (chla > lims[1]))
+                chla[out] = np.nan
+
+        elif alg == 'gilerson3':
+            chla = ifunc.chl_gilerson3(Red=rrs_dict['Red'].values, RedEdge2=rrs_dict['RedEdge2'].values)
+            if limits:
+                lims = [10, 2000]
+                out = np.where((chla < lims[0]) | (chla > lims[1]))
+                chla[out] = np.nan
+
         elif alg == 'gons':
             chla = ifunc.chl_gons(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values,
                                   RedEdge3=rrs_dict['RedEdge3'].values)
             if limits:
                 lims = [1, 250]
+                out = np.where((chla < lims[0]) | (chla > lims[1]))
+                chla[out] = np.nan
+
+        elif alg == 'gurlin':
+            chla = ifunc.chl_gurlin(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
+            if limits:
+                lims = [10, 1000]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
                 chla[out] = np.nan
 
@@ -695,13 +716,6 @@ class Methods:
             chla = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values, Green=rrs_dict['Green'].values)
             if limits:
                 lims = [0.01, 50]
-                out = np.where((chla < lims[0]) | (chla > lims[1]))
-                chla[out] = np.nan
-
-        elif alg == 'gilerson2':
-            chla = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
-            if limits:
-                lims = [5, 500]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
                 chla[out] = np.nan
 
@@ -774,10 +788,21 @@ class Methods:
         ----------
         @rrs_dict: rrs_dict: a xarray Dataset containing the Rrs bands
         @class_owt_spt: an array, with the same size as the input bands, with the OWT pixels
-        @alg: one of the following algorithms available: owt to use the methodology based on OWT, Hybrid, Nechad,
-            NechadGreen, Binding, Zhang, Dogliotti, Condé or different versions of Jiang
+        @alg: one of the following algorithms available:
+            owt: To use the methodology based on OWTs (Tavares et al., 2025)
+            Nechad: Nechad et al. (2010)
+            NechadGreen: Nechad but using the green band (Nechad et al., 2016)
+            Binding: Binding et al. (2010)
+            Zhang: Zhang et al. (2014)
+            Dogliotti: hybrid algorithm by Dogliottt et al. (2015)
+            Condé: developed for the Paranapanema river (Condé et al., 2019)
+            Madeira: developed for Sentinel-2 imagery for the Madeira river (Alves e Santos et al., 2024)
+            Hybrid: developed by Cordeiro (2022) for Sentinel-3 imagery
+            or different versions of Jiang (Jiang_Green, Jiang_Red, or Jiang in forms 'pixel' or 'polygon')
         @limits: boolean to choose whether to apply the algorithms only in their limits of cal/val
-        @mode_Jiang: used only for the general Jiang algorithm, to choose from pixel-wise or lake-wise calculation
+        @mode_Jiang: used only for the general Jiang algorithm, to choose from:
+            pixel: pixel-wise calculation
+            polygon: lake-wise (based on shapefile) calculation
         @rasterio_rast: used only for the general Jiang algorithm, a rasterio raster with the same configuration as the
             bands, open with rasterio.open
         @shapefile: used only for the general Jiang algorithm, a polygon (or set of polygons), usually of waterbodies to
@@ -843,34 +868,87 @@ class Methods:
 
         elif alg == 'Hybrid':
             turb = ifunc.spm_s3(Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
+            if limits:
+                lims = [0.1, 2000]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
+
         elif alg == 'Nechad':
             turb = ifunc.spm_nechad(Red=rrs_dict['Red'].values)
+            if limits:
+                lims = [0.1, 1000]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
 
         elif alg == 'NechadGreen':
             turb = ifunc.spm_nechad(Red=rrs_dict['Green'].values, a=228.72, c=0.2200)
+            if limits:
+                lims = [0.1, 200]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
 
         elif alg == 'Binding':
             turb = ifunc.spm_binding2010(RedEdge2=rrs_dict['RedEdge2'].values)
+            if limits:
+                lims = [0.1, 2000]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
 
         elif alg == 'Zhang':
             turb = ifunc.spm_zhang2014(RedEdge1=rrs_dict['RedEdge1'].values)
+            if limits:
+                lims = [0.1, 1000]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
 
         elif alg == 'Jiang_Green':
             turb = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Aerosol'].values,
                                              Blue=rrs_dict['Blue'].values,
                                              Green=rrs_dict['Green'].values,
                                              Red=rrs_dict['Red'].values)
+            if limits:
+                lims = [0.1, 100]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
 
         elif alg == 'Jiang_Red':
             turb = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Aerosol'].values,
                                            Blue=rrs_dict['Blue'].values,
                                            Green=rrs_dict['Green'].values,
                                            Red=rrs_dict['Red'].values)
+            if limits:
+                lims = [0.1, 500]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
+
         elif alg == 'Dogliotti':
             turb = ifunc.spm_dogliotti_S2(Red=rrs_dict['Red'].values,
                                           Nir2=rrs_dict['Nir2'].values)
+            if limits:
+                lims = [0.1, 1000]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
+
         elif alg == 'Conde':
             turb = ifunc.spm_conde(Red=rrs_dict['Red'].values)
+            if limits:
+                lims = [0.1, 100]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
+
+        elif alg == 'Madeira':
+            turb = ifunc.spm_madeira(Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
+            if limits:
+                lims = [0.1, 2000]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
+
+        elif alg == 'Hybrid':
+            turb = ifunc.spm_s3(Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
+            if limits:
+                lims = [0.1, 1000]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
 
         elif alg == 'Jiang':
             if mode_Jiang == 'pixel':
@@ -898,6 +976,10 @@ class Methods:
                         values = np.where(valid_pixels, out, 0)
                         # adding to avoid replacing values of cropping by other polygons
                         turb[slices[0], slices[1]] += values.reshape(mask.shape)
+            if limits:
+                lims = [0.1, 1000]
+                out = np.where((turb < lims[0]) | (turb > lims[1]))
+                turb[out] = np.nan
 
         # removing espurious values and zeros
         out = np.where((turb == 0) | np.isinf(turb))

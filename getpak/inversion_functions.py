@@ -1,17 +1,11 @@
 # This module contains the functions that will be used to invert from reflectances to water quality parameters
 # It was imported from the WaterQuality package (https://github.com/cordmaur/WaterQuality)
-# The dictionary `functions`` will be used by the waterquality module:
-# function = {
-#   'name_of_the_parameter': {'function': any_function}, 'units': 'units to be displayed in the report',
-#   'name_of_the_parameter2': .....
-# }
 
 # Any bands can be used to compute the final value
 # Available bands in Sentinel2 are:
 # Aerosol, Blue, Green, Red, RedEdge1, RedEdge2, RedEdge3, Nir, Nir2, Mir, Mir2
 
 import numpy as np
-
 
 #### CDOM ####
 # Brezonik et al. 2005
@@ -52,7 +46,7 @@ def chl_gons(Red, RedEdge1, RedEdge3, a=1.063, b=0.016, aw665=0.40, aw708=0.70):
     return chl
 
 
-# 2-band squared band ration by Gurlin et al. (2011)
+# 2-band squared band ratio by Gurlin et al. (2011)
 def chl_gurlin(Red, RedEdge1, a=25.28, b=14.85, c=-15.18):
     chl = (a * (RedEdge1 / Red) ** 2 + b * (RedEdge1 / Red) + c)
     return chl
@@ -354,82 +348,3 @@ def spm_zhang2014(RedEdge1, a=362507, b=2.3222):
 #     """
 #
 #     return secchi
-
-
-functions = {
-
-    'CHL_Gitelson2': {
-        'function': chl_gitelson2,
-        'units': 'mg/m³'
-    },
-
-    'CHL_OC2': {
-        'function': chl_OC2,
-        'units': 'mg/m³'
-    },
-
-    'CHL_Gilerson2': {
-        'function': chl_gilerson2,
-        'units': 'mg/m³'
-    },
-
-    'CHL_Gilerson3': {
-        'function': chl_gilerson3,
-        'units': 'mg/m³'
-    },
-
-    'CHL_Gons': {
-        'function': chl_gons,
-        'units': 'mg/m³'
-    },
-
-    'CHL_Gurlin': {
-        'function': chl_gurlin,
-        'units': 'mg/m³'
-    },
-
-    'CHL_Hybrid1': {
-        'function': chl_h1,
-        'units': 'mg/m³'
-    },
-
-    'CHL_Hybrid2': {
-        'function': chl_h2,
-        'units': 'mg/m³'
-    },
-
-    'CHL_NDCI': {
-        'function': chl_ndci,
-        'units': 'mg/m³'
-    },
-
-    'CDOM_Brezonik': {
-        'function': cdom_brezonik,
-        'units': '',
-    },
-
-    'SPM_Nechad': {
-        'function': spm_nechad,
-        'units': 'mg/l'
-    },
-
-    'SPM_S3': {
-        'function': spm_s3,
-        'units': 'mg/l'
-    },
-
-    'TURB_Dogliotti': {
-        'function': spm_dogliotti,
-        'units': 'FNU'
-    },
-
-    'TURB_Dogliotti_S2': {
-        'function': spm_dogliotti_S2,
-        'units': 'FNU'
-    },
-
-    'TURB_Conde': {
-        'function': spm_conde,
-        'units': 'NTU'
-    }
-}

@@ -49,5 +49,5 @@ Finally, install the library:
 pip install .
 ```
 
-To ensure installation, you can check the vignettes made for the library. Don't forget to correct the
+To ensure installation, you can check the examples made for the library. Don't forget to correct the
 path to the images!
