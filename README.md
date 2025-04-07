@@ -40,10 +40,14 @@ With your conda env activated, install GDAL before installing `getpak` to avoid 
 ```
 conda install -c conda-forge gdal
 ```
-Clone `getpak` repo to the desired location, enter it and type:
+Clone `getpak` repo to the desired location. First, install the dependencies using conda:
 ```
-pip install -e .
+conda install --file requirements.txt
 ```
-(Setup in edit mode is strongly recommended until a valid stable release is added to the Python Package Index - PyPI).
+Finally, install the library:
+```
+pip install .
+```
 
-test
+To ensure installation, you can check the vignettes made for the library. Don't forget to correct the
+path to the images!
