@@ -3,7 +3,7 @@
 
 # Any bands can be used to compute the final value
 # Available bands in Sentinel2 are:
-# Aerosol, Blue, Green, Red, RedEdge1, RedEdge2, RedEdge3, Nir, Nir2, Mir, Mir2
+# Aerosol, Blue, Green, Red, RedEdge1, RedEdge2, RedEdge3, Nir, Nir2, Swir1, Swir2
 
 import numpy as np
 

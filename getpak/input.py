@@ -54,6 +54,12 @@ class Input:
             self.meta = meta
             self.proj = proj
             self.trans = trans
+        elif sensor == 'S2MSI' and AC_processor == 'SeaDAS':
+            s = SeaDAS_S2()
+            img, meta, proj, trans = s.get_seadas_dict(seadas_nc_file=file)
+            self.meta = meta
+            self.proj = proj
+            self.trans = trans
         else:
             # self.log.error(f'Error: Wrong sensor or AC processor!')
             print("Error: Wrong sensor or AC processor!")
@@ -262,11 +268,6 @@ class GRS:
 class ACOLITE_S2:
     """
     Core functionalities to handle ACOLITE S2 files
-
-    Methods
-    -------
-    metadata(grs_file_entry)
-        Given a ACOLITE string element, return file metadata extracted from its name.
     """
 
     def __init__(self, parent_log=None):
@@ -334,8 +335,7 @@ class ACOLITE_S2:
 
     def get_aco_dict(self, aco_nc_file):
         """
-        Open ACOLITE netCDF files using xarray and dask, and return
-        a DataArray containing only the Rrs bands.
+        Open ACOLITE netCDF files using xarray and dask, and return a DataArray containing only the Rrs bands.
 
         Parameters
         ----------
@@ -384,4 +384,229 @@ class ACOLITE_S2:
 
         return aco, meta, proj, trans
 
+    class ACOLITE_S2:
+        """
+        Core functionalities to handle ACOLITE S2 files
 
+        Methods
+        -------
+        metadata(grs_file_entry)
+            Given a ACOLITE string element, return file metadata extracted from its name.
+        """
+
+        def __init__(self, parent_log=None):
+            # if parent_log:
+            #     self.log = parent_log
+            # else:
+            #     INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
+            #     logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
+            #     self.log = u.create_log_handler(logfile)
+
+            # import band names from Commons/DefaultDicts
+            self.acolite_nc_s2abands = dd.acolite_nc_s2abands
+            self.acolite_nc_s2bbands = dd.acolite_nc_s2bbands
+
+        @staticmethod
+        def metadata(aco_file_entry):
+            """
+            Given a ACOLITE file return metadata extracted from its name:
+
+            Parameters
+            ----------
+            @param aco_file_entry: str or pathlike obj that leads to the .nc file.
+
+            @return: metadata (dict) containing the extracted info, available keys are:
+                input_file, basename, mission, str_date, pydate, year, month, day, tile, product_type
+
+            Reference
+            ---------
+            Given the following file:
+            S2B_MSI_2024_06_06_14_45_27_T20LLQ_L2R.nc
+
+            S2A : (MMM) is the mission ID(S2A/S2B)
+            MSI : (MSI) is the sensor
+            2024_06_06 : (YYYY_MM_DD) Sensing date
+            14_45_27 : (??????) who knows?
+            T20LLQ : (Txxxxx) Tile Number
+            L2R : ACOLITE product type
+
+            Further reading:
+            Sentinel-2 MSI naming convention:
+            URL = https://sentinels.copernicus.eu/web/sentinel/user-guides/sentinel-2-msi/naming-convention
+            """
+            metadata = {}
+            basefile = os.path.basename(aco_file_entry)
+            splt = basefile.split('_')
+            if len(splt) == 10:
+                mission, sensor, yyyy, mm, dd, _, _, _, tile, aux = basefile.split('_')
+                prod_type, _ = aux.split('.')
+
+            date = yyyy + mm + dd
+            file_event_date = datetime.strptime(date, '%Y%m%d')
+
+            metadata['input_file'] = aco_file_entry
+            metadata['basename'] = basefile
+            metadata['mission'] = mission
+            metadata['str_date'] = date
+            metadata['pydate'] = file_event_date
+            metadata['year'] = yyyy
+            metadata['month'] = mm
+            metadata['day'] = dd
+            metadata['tile'] = tile
+            metadata['prod_type'] = prod_type
+
+            return metadata
+
+        def get_aco_dict(self, aco_nc_file):
+            """
+            Open ACOLITE netCDF files using xarray and dask, and return
+            a DataArray containing only the Rrs bands.
+
+            Parameters
+            ----------
+            @grs_nc_file: the path to the ACOLITE file
+
+            Returns
+            -------
+            @return aco: xarray.DataArray containing 11 Rrs bands.
+            The band names can be found at getpak.commons.DefaultDicts.aco_nc_s2*bands
+            """
+            # list of bands
+            meta = self.metadata(aco_nc_file)
+            # checking if Sentinel-2 A or B
+            if meta['mission'] == 'S2A':
+                bands = dd.acolite_nc_s2abands
+            elif meta['mission'] == 'S2B':
+                bands = dd.acolite_nc_s2bbands
+
+            # Opening the ACOLITE file
+            # self.log.info(f'Opening ACOLITE file {aco_nc_file}')
+            ds = xr.open_dataset(aco_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf")
+            # Getting spatial information from the Dataset
+            proj = ds.attrs.get("proj4_string")
+            trans = ds.rio.transform()
+            # Subsetting only the bands and renaming them to the naming convention, and dividing by pi (to Rrs) if L2R
+            if meta['prod_type'] == 'L2R':
+                adjbands = {key: f"rhos_{value}" for key, value in bands.items()}
+                subset_dict = {new_name: ds[var_name] / np.pi for new_name, var_name in adjbands.items()}
+            elif meta['prod_type'] == 'L2W':
+                if "Rrs_833" in ds.variables:
+                    adjbands = {key: f"Rrs_{value}" for key, value in bands.items()}
+                    subset_dict = {new_name: ds[var_name] for new_name, var_name in adjbands.items()}
+                    meta['prod_type'] = 'Rrs'
+                else:
+                    adjbands = {key: f"rhow_{value}" for key, value in bands.items()}
+                    subset_dict = {new_name: ds[var_name] / np.pi for new_name, var_name in adjbands.items()}
+            else:
+                # self.log.error(f'ACOLITE product not supported.')
+                aco = None
+                sys.exit(1)
+
+            aco = xr.Dataset(subset_dict)
+            aco.attrs["proj"] = proj
+            aco.attrs["trans"] = trans
+            ds.close()
+
+            return aco, meta, proj, trans
+
+class SeaDAS_S2:
+    """
+    Core functionalities to handle SeaDAS S2 files
+    """
+
+    def __init__(self, parent_log=None):
+        # if parent_log:
+        #     self.log = parent_log
+        # else:
+        #     INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
+        #     logfile = os.path.join(os.getcwd(), 'getpak_raster_' + INSTANCE_TIME_TAG + '.log')
+        #     self.log = u.create_log_handler(logfile)
+
+        # import band names from Commons/DefaultDicts
+        self.seadas_nc_s2abands = dd.seadas_nc_s2abands
+        self.seadas_nc_s2bbands = dd.seadas_nc_s2bbands
+
+    @staticmethod
+    def metadata(seadas_file_entry):
+        """
+        Given a SeaDAS file return metadata extracted from its name:
+
+        Parameters
+        ----------
+        @param seadas_file_entry: pathlike obj that leads to the .nc file.
+
+        @return: metadata (dict) containing the extracted info, available keys are:
+            input_file, basename, mission, str_date, pydate, year, month, day, tile, product_type
+
+        Reference
+        ---------
+        Metadata is read from the written attributes in the SeaDAS file
+        """
+        metadata = {}
+        ds = xr.open_dataset(seadas_file_entry, chunks={'y': -1, 'x': -1}, engine="netcdf4")
+
+        yyyy, mm, dd = ds.attrs['time_coverage_start'].split('T')[0].split('-')
+        date = yyyy + mm + dd
+        file_event_date = datetime.strptime(date, '%Y%m%d')
+
+        metadata['input_file'] = seadas_file_entry
+        metadata['basename'] = os.path.basename(seadas_file_entry)
+        metadata['mission'] = ds.attrs['platform']
+        metadata['str_date'] = date
+        metadata['pydate'] = file_event_date
+        metadata['year'] = yyyy
+        metadata['month'] = mm
+        metadata['day'] = dd
+
+        ds.close()
+
+        return metadata
+
+    def get_seadas_dict(self, seadas_nc_file):
+        """
+        Open SeaDAS netCDF files using xarray and dask, and return a DataArray containing only the Rrs bands.
+
+        Parameters
+        ----------
+        @grs_nc_file: the path to the SeaDAS file
+
+        Returns
+        -------
+        @return seadas: xarray.DataArray containing 11 Rrs bands.
+        The band names can be found at getpak.commons.DefaultDicts.seadas_nc_s2*bands
+        """
+        # list of bands
+        meta = self.metadata(seadas_nc_file)
+        # checking if Sentinel-2 A or B
+        if meta['mission'] == 'Sentinel-2A':
+            bands = dd.seadas_nc_s2abands
+        elif meta['mission'] == 'Sentinel-2B':
+            bands = dd.seadas_nc_s2bbands
+
+        # Opening the SeaDAS file - group navigation_data to get the geospatial information
+        ds = xr.open_dataset(seadas_nc_file, group="navigation_data", chunks={'y': -1, 'x': -1}, engine="h5netcdf")
+        lon = ds['longitude'].values
+        lat = ds['latitude'].values
+        ds.close()
+        proj = "EPSG:4326"
+        trans = None
+        # Opening the SeaDAS file - group geophysical_data to get the Rrs
+        ds = xr.open_dataset(seadas_nc_file, group = "geophysical_data", chunks={'y': -1, 'x': -1}, engine="h5netcdf")
+        # Subsetting only the bands and renaming them to the naming convention
+        ds = ds.rename({'number_of_lines': 'y', 'pixels_per_line': 'x'})
+        adjbands = {key: f"Rrs_{value}" for key, value in bands.items()}
+        subset_dict = {new_name: ds[var_name] for new_name, var_name in adjbands.items()}
+
+        # Creating the xarray Dataset with the band information
+        seadas = xr.Dataset(subset_dict)
+        seadas = seadas.assign_coords({
+                            'y': ('y', lat[:, 0]),  # assuming latitude is 2D with shape (y, x)
+                            'x': ('x', lon[0, :])
+                        })
+        seadas.rio.set_spatial_dims(x_dim='x', y_dim='y', inplace=True)
+        seadas.rio.write_crs(proj, inplace=True)
+        seadas.attrs["proj"] = proj
+        seadas.attrs["trans"] = trans
+        ds.close()
+
+        return seadas, meta, proj, trans

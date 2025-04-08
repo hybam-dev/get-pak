@@ -503,6 +503,30 @@ class DefaultDicts:
                          'Swir1': "1610",
                          'Swir2': "2186"}
 
+    seadas_nc_s2abands = {'Aerosol': "443",
+                         'Blue': "492",
+                         'Green': "560",
+                         'Red': "665",
+                         'RedEdge1': "704",
+                         'RedEdge2': "740",
+                         'RedEdge3': "783",
+                         'Nir1': "835",
+                         'Nir2': "865",
+                         'Swir1': "1613",
+                         'Swir2': "2200"}
+
+    seadas_nc_s2bbands = {'Aerosol': "442",
+                         'Blue': "492",
+                         'Green': "559",
+                         'Red': "665",
+                         'RedEdge1': "704",
+                         'RedEdge2': "739",
+                         'RedEdge3': "780",
+                         'Nir1': "835",
+                         'Nir2': "864",
+                         'Swir1': "1611",
+                         'Swir2': "2184"}
+
     clustering_methods = {'M0': ['Oa17_reflectance:float', 'Oa21_reflectance:float'],
                           'M1': ['Oa17_reflectance:float', 'T865:float', 'A865:float'],
                           'M2': ['Oa21_reflectance:float', 'T865:float', 'A865:float'],
