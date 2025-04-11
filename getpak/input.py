@@ -20,7 +20,8 @@ class Input:
 
     def get_input_dict(self, file, sensor='S2MSI', AC_processor='GRS', grs_version=None):
         """
-        Function to open the satellite image, depending on user information of sensor and atmospheric correction
+        Function to open the satellite image in format netCDF
+        It depends on user information of sensor and atmospheric correction
         processor.
         This class is just a wrapper as it uses the different classes for the different ACs to read the input
 
@@ -132,6 +133,10 @@ class GRS:
         if len(splt) == 9:
             mission, proc_level, date_n_time, proc_ver, r_orbit, tile, prod_disc, cc, aux = basefile.split('_')
             ver, _ = aux.split('.')
+        elif len(splt) == 8:
+            mission, proc_level, date_n_time, proc_ver, r_orbit, tile, prod_disc, aux = basefile.split('_')
+            ver,_ = aux.split('.nc')
+            cc = 'NA'
         else:
             mission, proc_level, date_n_time, proc_ver, r_orbit, tile, aux = basefile.split('_')
             prod_disc, _ = aux.split('.')
