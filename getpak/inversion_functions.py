@@ -348,3 +348,80 @@ def spm_zhang2014(RedEdge1, a=362507, b=2.3222):
 #     """
 #
 #     return secchi
+
+functions = {
+    'CHL_Gitelson2': {
+        'function': chl_gitelson2,
+        'units': 'mg/m³'
+        },
+
+    'CHL_OC2': {
+     'function': chl_OC2,
+       'units': 'mg/m³'
+        },
+
+    'CHL_Gilerson2': {
+        'function': chl_gilerson2,
+        'units': 'mg/m³'
+        },
+    
+    'CHL_Gilerson3': {
+        'function': chl_gilerson3,
+        'units': 'mg/m³'
+        },
+    
+    'CHL_Gons': {
+        'function': chl_gons,
+        'units': 'mg/m³'
+        },
+        
+    'CHL_Gurlin': {
+        'function': chl_gurlin,
+        'units': 'mg/m³'
+        },
+        
+    'CHL_Hybrid1': {
+        'function': chl_h1,
+        'units': 'mg/m³'
+        },
+    
+    'CHL_Hybrid2': {
+        'function': chl_h2,
+        'units': 'mg/m³'
+        },
+    
+    'CHL_NDCI': {
+        'function': chl_ndci,
+        'units': 'mg/m³'
+        },
+        
+    'CDOM_Brezonik': {
+        'function': cdom_brezonik,
+        'units': '',
+        },
+    
+    'SPM_Nechad': {
+        'function': spm_nechad,
+        'units': 'mg/l'
+        },
+    
+    'SPM_S3': {
+        'function': spm_s3,
+        'units': 'mg/l'
+        },
+    
+    'TURB_Dogliotti': {
+        'function': spm_dogliotti,
+        'units': 'FNU'
+        },
+    
+    'TURB_Dogliotti_S2': {
+        'function': spm_dogliotti_S2,
+        'units': 'FNU'
+        },
+    
+    'TURB_Conde': {
+        'function': spm_conde,
+        'units': 'NTU'
+        }
+    }

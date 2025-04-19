@@ -2,7 +2,7 @@ import os
 import ast
 import inspect
 
-import getpak.inversion_functions as ifunc
+from getpak import inversion_functions as ifunc
 from getpak.input import GRS as g
 from getpak.output import Raster as r
 from getpak.commons import Utils as u
