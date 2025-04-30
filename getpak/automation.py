@@ -26,6 +26,10 @@ class Pipelines:
         return grs_file_list
     
     @property
+    def grs_file_version(self):
+        return self.settings.get('sensors', 'grs_version')['grs_version']
+
+    @property
     def l2b_functions(self):
         l2b_algos = ast.literal_eval(self.settings['timeseries']['l2b_algorithms'])
         return l2b_algos
@@ -51,12 +55,13 @@ class Pipelines:
         inside the client input folder.
         """
         grs_file_list = self.grs_files
+        grs_ver = self.grs_file_version
         for grs_file in grs_file_list:  #TODO: vectorize this loop
-            print(f'Processing GRS file: {grs_file}')
+            print(f'Processing GRS using version: {grs_ver} file: {grs_file}')
             t_id = u.get_s2_tile_id(grs_file)
         
             print(f'Extracting S2-MSI band data from GRS.nc file...')
-            img = grs.get_grs_dict(grs_nc_file=grs_file, grs_version='v20')  #TODO: automate GRS version check
+            img = grs.get_grs_dict(grs_nc_file=grs_file, grs_version=grs_ver)  #TODO: automate GRS version check
             img_base_name = os.path.basename(grs_file).split('.')[0]
             
             for algo in self.l2b_fx_required_bands.keys():
