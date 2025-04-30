@@ -13,13 +13,7 @@ Author: David Guimaraes - dvdgmf@gmail.com
 # ,-------------,
 # | ENTRY POINT |
 # '-------------'
-if __name__ == '__main__':
-    # ,--------------,
-    # | Start timers |
-    # '--------------'
-    U.tic()
-    t1 = time.perf_counter()
-
+def main():
     # ,------,
     # | LOGO |
     # '------'
@@ -62,6 +56,17 @@ if __name__ == '__main__':
     else:
         print('Exiting.\n')
 
+
+if __name__ == '__main__':
+    # ,--------------,
+    # | Start timers |
+    # '--------------'
+    U.tic()
+    t1 = time.perf_counter()
+    # ,--------------,
+    # | Call GET-Pak |
+    # '--------------'
+    main()
     # ,------------------------------,
     # | End timers and report to log |
     # '------------------------------'
