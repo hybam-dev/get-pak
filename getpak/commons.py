@@ -135,7 +135,7 @@ class Utils:
             return None
 
     @staticmethod
-    def s2proj_ref_builder(img_path_str):
+    def s2proj_ref_builder(img_path_str, renamed_mask=False):
         """
         Given a WaterDetect output .tif image
         return GDAL information metadata
@@ -146,8 +146,11 @@ class Utils:
 
         @return: tile_id (str) and ref (dict) containing the GDAL information
         """
-        img_parent_name = os.path.basename(Path(img_path_str).parents[1])
-        sliced_ipn = img_parent_name.split('_')
+        if renamed_mask:
+            img_name = os.path.basename(img_path_str)
+        else:
+            img_name = os.path.basename(Path(img_path_str).parents[1])
+        sliced_ipn = img_name.split('_')
         tile_id = sliced_ipn[5][1:]
         # Get GDAL information from the template file
         ref_data = gdal.Open(img_path_str)
