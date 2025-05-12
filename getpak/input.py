@@ -5,6 +5,7 @@ import rasterio.mask
 import numpy as np
 import xarray as xr
 import geopandas as gpd
+from pathlib import Path
 
 from getpak import cluster
 from datetime import datetime
@@ -39,6 +40,9 @@ class Input:
         @return img: xarray.DataArray containing the Rrs bands.
         """
 
+        # first check if file is NetCDF:
+        self.test_valid_file(file)
+
         if sensor == 'S2MSI' and AC_processor == 'GRS':
             if grs_version:
                 g = GRS()
@@ -69,6 +73,17 @@ class Input:
 
         return img
 
+    @staticmethod
+    def test_valid_file(file):
+        if Path(file).is_file():
+            if file.endswith('.nc'):
+                pass
+            else:
+                print('The input file is not a valid NetCDF. Please use only NetCDF files with GET-Pak!')
+                sys.exit(1)
+        else:
+            print('The path to the input file is not valid!')
+            sys.exit(1)
 
 class GRS:
     """

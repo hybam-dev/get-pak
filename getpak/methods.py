@@ -1148,10 +1148,18 @@ class Methods:
         for n, date in enumerate(fst_dates):
             arr_index = np.where(np.array(snd_dates) == date)[0]
             if len(arr_index) > 0:
-                matches[date] = {'IMG': fst_tile_list[n], 'WM': snd_tile_list[arr_index[0]]}
-                str_matches[date] = {'IMG': str(fst_tile_list[n]),
-                                     'WM': str(snd_tile_list[arr_index[0]])}  # redundant backup
-                dates.append(date)
+                # first check if the date is repeating
+                if date not in matches:
+                    matches[date] = {'IMG': fst_tile_list[n], 'WM': snd_tile_list[arr_index[0]]}
+                    str_matches[date] = {'IMG': str(fst_tile_list[n]),
+                                         'WM': str(snd_tile_list[arr_index[0]])}  # redundant backup
+                    dates.append(date)
+                else:
+                    date2 = date + '_2'
+                    matches[date2] = {'IMG': fst_tile_list[n], 'WM': snd_tile_list[arr_index[0]]}
+                    str_matches[date2] = {'IMG': str(fst_tile_list[n]),
+                                         'WM': str(snd_tile_list[arr_index[0]])}  # redundant backup
+                    dates.append(date2)
 
         print(f'Found {len(dates)} match-ups\n')
         # self.log.info(f'Found {len(dates)} match-ups\n')
