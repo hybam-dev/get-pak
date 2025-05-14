@@ -187,7 +187,7 @@ class Utils:
         path2walk: folder to scan for files
         fpattern: the file pattern to look for inside the folders
         dir_is_file: option to include the folders in the search, defaults to False
-        unwanted_string: a string to search for and remove from the list of files if present
+        unwanted_string: a string to search for and remove from the list of files if present ex: '*_anc*' to remove grs auxiliary NetCDFs
 
         Returns
         -------

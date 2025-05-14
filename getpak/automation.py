@@ -22,7 +22,7 @@ class Pipelines:
 
     @property
     def grs_files(self):
-        grs_file_list = u.walktalk(self.settings.get('client_folder', 'inputs')['inputs'])
+        grs_file_list = u.walktalk(self.settings.get('client_folder', 'inputs')['inputs'], unwanted_string='*_anc*')
         return grs_file_list
     
     @property
