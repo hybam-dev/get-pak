@@ -80,6 +80,19 @@ class Utils:
             return
 
     @staticmethod
+    def sort_l2b_by_date(input_directory_path):
+        """
+        Creates a python list containing the Posixpath from all the files inside the directory and sort them by date.
+        """
+        # convert input string to Posix
+        in_path_obj = Path(input_directory_path)
+        # get only the '20160425T134227' from the file name and use it to sort the list by date
+        sorted_output_files = sorted(os.listdir(in_path_obj), key=lambda s: s.split('_')[2])
+        sorted_output_files_fullpath = [os.path.join(in_path_obj, img) for img in sorted_output_files]
+
+        return sorted_output_files_fullpath
+
+    @staticmethod
     def create_log_handler(fname):
         # https://stackoverflow.com/questions/62835466/create-a-separate-logger-for-each-process-when-using-concurrent-futures-processp
         logger = logging.getLogger(name=fname)
