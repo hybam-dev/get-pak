@@ -1272,8 +1272,8 @@ class Methods:
             print(f'Done intersection with water mask.')
         else:
             print(f'The water mask in not on the same tile as input image!')
-            print(f'W.Mask-trans:{wd_trans} / Rrs-trans:{rrs_dict.attrs['trans']}')
-            print(f'W.Mask-proj:{wd_proj} / Rrs-proj:{rrs_dict.attrs['proj']}')
+            print(f'W.Mask-trans:{wd_trans} / Rrs-trans:{rrs_dict.attrs["trans"]}')
+            print(f'W.Mask-proj:{wd_proj} / Rrs-proj:{rrs_dict.attrs["proj"]}')
             img = None
             sys.exit(1)
 
