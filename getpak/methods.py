@@ -1282,7 +1282,7 @@ class Methods:
     #     return img
     
     @staticmethod
-    def intersect_watermask(rrs_dict, water_mask_path):
+    def intersect_watermask(rrs_dict, water_mask_dir):
         """
         Test overlap before reprojecting/intersecting water mask to Rrs data using rioxarray.
 
@@ -1292,7 +1292,7 @@ class Methods:
             Masked Rrs data if overlap exists, else None
         """
         # Load WaterDetect mask
-        wd_mask = rxr.open_rasterio(water_mask_path, masked=True).squeeze()
+        wd_mask = rxr.open_rasterio(water_mask_dir, masked=True).squeeze()
 
         # Ensure Rrs has CRS and spatial info
         rrs_dict = rrs_dict.rio.write_crs(rrs_dict.attrs['proj'], inplace=False)
