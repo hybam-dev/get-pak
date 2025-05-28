@@ -11,6 +11,7 @@ pandas
 rasterio
 rasterstats==0.19.0
 rioxarray
+shapely
 scikit-image
 scikit-learn
 xarray==2023.12.0
