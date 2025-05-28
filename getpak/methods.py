@@ -1282,7 +1282,7 @@ class Methods:
     #     return img
     
     @staticmethod
-    def intersect_watermask(rrs_dict, water_mask_dir):
+    def intersect_watermask(rrs_dict, water_mask_path):
         """
         Test overlap before reprojecting/intersecting water mask to Rrs data using rioxarray.
 
