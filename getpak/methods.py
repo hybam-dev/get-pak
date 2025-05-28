@@ -4,13 +4,15 @@ import rasterio
 import numpy as np
 import pandas as pd
 import xarray as xr
+import rioxarray as rxr
 
+from shapely.geometry import box
 from rasterstats import zonal_stats
-
 from getpak.input import GRS
 from getpak.commons import DefaultDicts as dd
 from dask import compute
 from dask import delayed
+
 from getpak import owts_spy_S2_B1_7
 from getpak import owts_spy_S2_B2_7
 from getpak import owts_spm_S2_B1_8A
@@ -1247,34 +1249,73 @@ class Methods:
 
         return None
 
+    # @staticmethod
+    # def intersect_watermask(rrs_dict, water_mask_dir):
+    #     """
+    #     Find all invalid masks from WaterDetect in a folder, get their dates,
+    #     and copy them to a new folder with a new name. Also writes the path 
+    #     of the water masks for each date
+
+    #     Parameters
+    #     ----------
+    #     @input_folder: folder where the waterdetect masks are
+    #     @output_folder: folder to copy (only) the invalid masks to
+    #     """
+    #     # Loading WD mask
+    #     ref_data = rasterio.open(str(water_mask_dir))
+    #     wd_mask = ref_data.read(1)
+    #     wd_trans = ref_data.transform
+    #     wd_proj = ref_data.crs
+    #     ref_data = None
+
+    #     # intersecting the GRS data with the waterdetect mask
+    #     if wd_trans == rrs_dict.attrs['trans'] and wd_proj == rrs_dict.attrs['proj']:
+    #         img = rrs_dict.where(wd_mask == 1).persist()
+    #         print(f'Done intersection with water mask.')
+    #     else:
+    #         print(f'The water mask in not on the same tile as input image!')
+    #         print(f'W.Mask-trans:{wd_trans} / Rrs-trans:{rrs_dict.attrs["trans"]}')
+    #         print(f'W.Mask-proj:{wd_proj} / Rrs-proj:{rrs_dict.attrs["proj"]}')
+    #         img = None
+    #         sys.exit(1)
+
+    #     return img
+    
     @staticmethod
-    def intersect_watermask(rrs_dict, water_mask_dir):
+    def intersect_watermask(rrs_dict, water_mask_path):
         """
-        Find all invalid masks from WaterDetect in a folder, get their dates,
-        and copy them to a new folder with a new name. Also writes the path 
-        of the water masks for each date
+        Test overlap before reprojecting/intersecting water mask to Rrs data using rioxarray.
 
-        Parameters
-        ----------
-        @input_folder: folder where the waterdetect masks are
-        @output_folder: folder to copy (only) the invalid masks to
+        Returns
+        -------
+        xarray.DataArray or None
+            Masked Rrs data if overlap exists, else None
         """
-        # Loading WD mask
-        ref_data = rasterio.open(str(water_mask_dir))
-        wd_mask = ref_data.read(1)
-        wd_trans = ref_data.transform
-        wd_proj = ref_data.crs
-        ref_data = None
+        # Load WaterDetect mask
+        wd_mask = rxr.open_rasterio(water_mask_path, masked=True).squeeze()
 
-        # intersecting the GRS data with the waterdetect mask
-        if wd_trans == rrs_dict.attrs['trans'] and wd_proj == rrs_dict.attrs['proj']:
-            img = rrs_dict.where(wd_mask == 1).persist()
-            print(f'Done intersection with water mask.')
-        else:
-            print(f'The water mask in not on the same tile as input image!')
-            print(f'W.Mask-trans:{wd_trans} / Rrs-trans:{rrs_dict.attrs["trans"]}')
-            print(f'W.Mask-proj:{wd_proj} / Rrs-proj:{rrs_dict.attrs["proj"]}')
-            img = None
-            sys.exit(1)
+        # Ensure Rrs has CRS and spatial info
+        rrs_dict = rrs_dict.rio.write_crs(rrs_dict.attrs['proj'], inplace=False)
 
+        # Check bounding box overlap before reprojecting
+        wd_bounds = box(*wd_mask.rio.bounds())
+        rrs_bounds = box(*rrs_dict.rio.bounds())
+
+        if not wd_bounds.intersects(rrs_bounds):
+            print("No spatial overlap between Rrs image and water mask.")
+            return None
+
+        # Reproject water mask to match Rrs
+        wd_mask_matched = wd_mask.rio.reproject_match(rrs_dict)
+
+        # Now mask Rrs using the reprojected water mask
+        img = rrs_dict.where(wd_mask_matched == 1).persist()
+
+        # Optional: Check if mask actually selected any pixels
+        # if img['Red'].notnull().sum().compute().item() == 0:
+        if img['Red'].notnull().any().compute() == False:
+            print("Water mask does not cover any valid Rrs pixels.")
+            return None
+        
+        print(" Done intersection with water mask.")
         return img
