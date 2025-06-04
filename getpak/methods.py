@@ -555,7 +555,9 @@ class Methods:
         @alg: one the following algorithms available:
             owt: To use the methodology based on OWTs (Tavares et al., 2025)
             gilerson2: 2-band NIR-red ratio by Gilerson et al. (2010)
-            gons: the 2-band semi-analytical by Gons et al. (2003, 2005)
+            gilerson3: 3-band NIR-red ratio by Gilerson et al. (2010)
+            gons: 2-band semi-analytical by Gons et al. (2003, 2005)
+            gurlin: 2-band squared band ratio by Gurlin et al. (2011)
             ndci: Normalised Difference Chlorophyll Index, Mishra and Mishra (2012)
             oc2: NASA Ocean Colour 2-band algorithm, O'Reilly et al. (1998)
 
@@ -598,7 +600,7 @@ class Methods:
                 chla[index] = ifunc.chl_ndci(Red=rrs_dict['Red'].values[index],
                                              RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
-                    lims = [5, 250]
+                    lims = [2.5, 250]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
 
@@ -610,7 +612,7 @@ class Methods:
                 chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
                                                   RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
-                    lims = [5, 500]
+                    lims = [2.5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
 
@@ -620,7 +622,7 @@ class Methods:
                 chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
                                                   RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
-                    lims = [5, 500]
+                    lims = [2.5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
 
@@ -681,7 +683,7 @@ class Methods:
         elif alg == 'gilerson2':
             chla = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
             if limits:
-                lims = [5, 500]
+                lims = [2.5, 500]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
                 chla[out] = np.nan
 
@@ -710,7 +712,7 @@ class Methods:
         elif alg == 'ndci':
             chla = ifunc.chl_ndci(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
             if limits:
-                lims = [5, 250]
+                lims = [2.5, 250]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
                 chla[out] = np.nan
 

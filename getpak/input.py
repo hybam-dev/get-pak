@@ -6,6 +6,8 @@ import numpy as np
 import xarray as xr
 import geopandas as gpd
 from pathlib import Path
+from osgeo import gdal
+from affine import Affine
 
 from getpak import cluster
 from datetime import datetime
@@ -19,7 +21,7 @@ class Input:
     def __init__(self):
         pass
 
-    def get_input_dict(self, file, sensor='S2MSI', AC_processor='GRS', grs_version=None):
+    def get_input_nc(self, file, sensor='S2MSI', AC_processor='GRS', grs_version=None):
         """
         Function to open the satellite image in format netCDF
         It depends on user information of sensor and atmospheric correction
@@ -212,8 +214,13 @@ class GRS:
                 grs.attrs["proj"] = proj
                 grs.attrs["trans"] = trans
         elif grs_version == 'v20':
+            # first getting transform using gdal
+            ds = gdal.Open(f'NETCDF:{grs_nc_file}:Rrs')
+            gt = ds.GetGeoTransform()
+            trans = Affine(gt[1], gt[2], gt[0], gt[4], gt[5], gt[3])
+            ds = None
+            # Now opening using xarray
             ds = xr.open_dataset(grs_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf")
-            trans = ds.rio.transform()
             proj = rasterio.crs.CRS.from_wkt(ds['spatial_ref'].attrs.get('crs_wkt'))
             subset_dict = {band: ds['Rrs'].sel(wl=wave).drop_vars(['wl', 'time']) for band, wave in bands.items()}
             grs = xr.Dataset(subset_dict)

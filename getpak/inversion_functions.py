@@ -105,7 +105,7 @@ def spm_dogliotti(Red, Nir2):
     """Switching semi-analytical-algorithm computes turbidity from red and NIR band
 
     following Dogliotti et al., 2015
-    :param Red : surface Reflectances Red  band [dl]
+    :param Red : surface Reflectances Red band [dl]
     :param Nir2: surface Reflectances NIR band [dl]
     :return: turbidity in FNU
     """
@@ -114,8 +114,8 @@ def spm_dogliotti(Red, Nir2):
     a_low, c_low = 228.1, 0.1641
     a_high, c_high = 3078.9, 0.2112
 
-    t_low = spm_nechad(Red, a_low, c_low)
-    t_high = spm_nechad(Nir2, a_high, c_high)
+    t_low = spm_nechad(Red, a_low, 0, c_low)
+    t_high = spm_nechad(Nir2, a_high, 0, c_high)
     w = (Red - limit_inf) / (limit_sup - limit_inf)
     t_mixing = (1 - w) * t_low + w * t_high
 
@@ -137,8 +137,8 @@ def spm_dogliotti_S2(Red, Nir2):
     a_low, c_low = 610.94, 0.2324
     a_high, c_high = 3030.32, 0.2115
 
-    t_low = spm_nechad(Red, a_low, c_low)
-    t_high = spm_nechad(Nir2, a_high, c_high)
+    t_low = spm_nechad(Red, a_low, 0, c_low)
+    t_high = spm_nechad(Nir2, a_high, 0, c_high)
     w = (Red - limit_inf) / (limit_sup - limit_inf)
     t_mixing = (1 - w) * t_low + w * t_high
 
@@ -148,8 +148,8 @@ def spm_dogliotti_S2(Red, Nir2):
     return t_low
 
 # Nechad et al. (2010)
-def spm_nechad(Red, a=610.94, c=0.2324):
-    spm = a * Red / (1 - (Red / c))
+def spm_nechad(Red, a=355.85, b=1.74, c=0.1728):
+    spm = a * (Red * np.pi) / (1 - ((Red * np.pi) / c)) + b
     return spm
 
 # Jiang et al. (2021)
