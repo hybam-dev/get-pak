@@ -1191,6 +1191,8 @@ class Methods:
         import shutil
         wd_dates, wd_masks_list = [], []
         if isinstance(output_folder, str):
+            # Assure path to file exists, if not, create it.
+            Path(os.path.dirname(output_folder)).mkdir(parents=True, exist_ok=True)
             for root, dirs, files in os.walk(input_folder, topdown=False):
                 for name in files:
                     if name.endswith('.tif') and '_water_mask' in name:
@@ -1201,8 +1203,9 @@ class Methods:
                         shutil.copyfile(f, dest_plus_name)
                         # print(f'COPYING: {f} TO: {dest_plus_name}\n')
                         # appending the date and path
-                        nome = f.parent.parent.name.split(
-                            '_')  # check because for MAJA the dates are in position 2, while for other products it is 3
+                        nome = f.parent.parent.name.split('_')  
+                        # check because for MAJA the dates are in position 2,
+                        #  while for other products it is 3
                         date = nome[1][0:8] if nome[1][0] == '2' else nome[2][0:8]
                         wd_dates.append(date)
                         wd_masks_list.append(Path(dest_plus_name))
