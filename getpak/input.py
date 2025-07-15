@@ -106,7 +106,7 @@ class GRS:
         #     self.log = u.create_log_handler(logfile)
 
         # import band names from Commons/DefaultDicts
-        self.client = cluster.ClusterManager.get_client
+        # self.client = cluster.ClusterManager.get_client
         pass
 
     @staticmethod
@@ -196,7 +196,7 @@ class GRS:
         @return grs: xarray.DataArray containing 11 Rrs bands.
         The band names can be found at getpak.commons.DefaultDicts.grs_v20nc_s2bands
         """
-        client = self.client()
+        # client = self.client()
         meta = self.metadata(grs_nc_file)
         # list of bands
         bands = dd.grs_v20nc_s2bands
@@ -241,7 +241,7 @@ class GRS:
             sys.exit(1)
 
         ds.close()
-        grs = client.persist(grs)
+        # grs = client.persist(grs)
         return grs, meta, proj, trans
  
     def _get_shp_features(self, shp_file, unique_key='id', grs_crs='EPSG:32720'):
