@@ -1128,7 +1128,8 @@ class Methods:
         return score(angle)
 
     # Water mask intersecting methods
-    def sch_date_matchups(self, fst_dates, snd_dates, fst_tile_list, snd_tile_list):
+    @staticmethod
+    def sch_date_matchups(fst_dates, snd_dates, fst_tile_list, snd_tile_list):
         """
         Function to search for the match-up dates of two sets of images given two sets of dates.
         This function also writes the directories of the matchups for each date
@@ -1166,8 +1167,7 @@ class Methods:
                     dates.append(date2)
 
         print(f'Found {len(dates)} match-ups\n')
-        # self.log.info(f'Found {len(dates)} match-ups\n')
-
+        
         return matches, str_matches, dates
 
     @staticmethod
@@ -1322,5 +1322,5 @@ class Methods:
             print("Water mask does not cover any valid Rrs pixels.")
             return None
         
-        print(" Done intersection with water mask.")
+        print("Done.")
         return img

@@ -1,9 +1,10 @@
 import time
+import pickle
+import getpak
 import argparse
 
-import getpak
-from getpak.commons import Utils as U
 from getpak import automation as A
+from getpak.commons import Utils as U
 
 
 """
@@ -18,7 +19,7 @@ def main():
     # | LOGO |
     # '------'
     U.print_logo()
-
+    
     # ,-----------------,
     # | Present options |
     # '-----------------'
@@ -43,6 +44,8 @@ def main():
     # | Automation pipelines class declaration |
     # '----------------------------------------'
     gpk_pipe = A.Pipelines()
+    id = gpk_pipe.INSTANCE_TIME_TAG
+    print(f'GET-Pak instance run #{id}')  # (YYYYMMDDTHHMMSS)
 
     # ,---------------,
     # | Treat options |
@@ -51,7 +54,16 @@ def main():
         print(f'GET-Pak version: {getpak.__version__}')
 
     elif args['getpipe']:
-        gpk_pipe.run_l2b_algo(args)
+        
+        matches, str_matches, dates, meta = gpk_pipe.get_matchups()
+        
+        l2b_results = gpk_pipe.matchups_to_l2b(matches, str_matches, dates, meta)
+
+        # l2b_results contains the paths to start the time-series processing
+        pkl_path_name = f'getpak_{id}.pkl'
+        print(f'Saving processing metadata to: {pkl_path_name} ..')
+        with open(pkl_path_name, "wb") as f:
+            pickle.dump(l2b_results, f)
 
     else:
         print('Exiting.\n')

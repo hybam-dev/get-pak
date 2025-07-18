@@ -80,6 +80,19 @@ class Utils:
             return
 
     @staticmethod
+    def set_gdal_driver_path():
+        """
+        Sets the GDAL_DRIVER_PATH environment variable to the path of the GDAL plugins directory.
+        This is useful for ensuring that GDAL can find its drivers when running in different environments.
+        """
+        ## Définir GDAL_DRIVER_PATH dynamiquement à partir du kernel courant
+        ## Maxime Sangalli - Support HPC - (Thales Services Numériques)
+        str_GDAL_DRIVER_PATH = os.path.join(sys.prefix, "lib", "gdalplugins")
+        os.environ["GDAL_DRIVER_PATH"] = str_GDAL_DRIVER_PATH
+        print(f'Using GDAL_DRIVER_PATH={str_GDAL_DRIVER_PATH}')
+        return str_GDAL_DRIVER_PATH
+
+    @staticmethod
     def sort_l2b_by_date(input_directory_path):
         """
         Creates a python list containing the Posixpath from all the files inside the directory and sort them by date.
