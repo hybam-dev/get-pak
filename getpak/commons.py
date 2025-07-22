@@ -80,32 +80,6 @@ class Utils:
             return
 
     @staticmethod
-    def set_gdal_driver_path():
-        """
-        Sets the GDAL_DRIVER_PATH environment variable to the path of the GDAL plugins directory.
-        This is useful for ensuring that GDAL can find its drivers when running in different environments.
-        """
-        ## Définir GDAL_DRIVER_PATH dynamiquement à partir du kernel courant
-        ## Maxime Sangalli - Support HPC - (Thales Services Numériques)
-        str_GDAL_DRIVER_PATH = os.path.join(sys.prefix, "lib", "gdalplugins")
-        os.environ["GDAL_DRIVER_PATH"] = str_GDAL_DRIVER_PATH
-        print(f'Using GDAL_DRIVER_PATH={str_GDAL_DRIVER_PATH}')
-        return str_GDAL_DRIVER_PATH
-
-    @staticmethod
-    def sort_l2b_by_date(input_directory_path):
-        """
-        Creates a python list containing the Posixpath from all the files inside the directory and sort them by date.
-        """
-        # convert input string to Posix
-        in_path_obj = Path(input_directory_path)
-        # get only the '20160425T134227' from the file name and use it to sort the list by date
-        sorted_output_files = sorted(os.listdir(in_path_obj), key=lambda s: s.split('_')[2])
-        sorted_output_files_fullpath = [os.path.join(in_path_obj, img) for img in sorted_output_files]
-
-        return sorted_output_files_fullpath
-
-    @staticmethod
     def create_log_handler(fname):
         # https://stackoverflow.com/questions/62835466/create-a-separate-logger-for-each-process-when-using-concurrent-futures-processp
         logger = logging.getLogger(name=fname)
@@ -161,7 +135,7 @@ class Utils:
             return None
 
     @staticmethod
-    def s2proj_ref_builder(img_path_str, renamed_mask=False, skip_id=False):
+    def s2proj_ref_builder(img_path_str):
         """
         Given a WaterDetect output .tif image
         return GDAL information metadata
@@ -172,15 +146,9 @@ class Utils:
 
         @return: tile_id (str) and ref (dict) containing the GDAL information
         """
-        if renamed_mask:
-            img_name = os.path.basename(img_path_str)
-        else:
-            img_name = os.path.basename(Path(img_path_str).parents[1])
-        if not skip_id:
-            sliced_ipn = img_name.split('_')
-            tile_id = sliced_ipn[5][1:]
-        else:
-            tile_id = None    
+        img_parent_name = os.path.basename(Path(img_path_str).parents[1])
+        sliced_ipn = img_parent_name.split('_')
+        tile_id = sliced_ipn[5][1:]
         # Get GDAL information from the template file
         ref_data = gdal.Open(img_path_str)
         mtx = ref_data.ReadAsArray()
@@ -216,7 +184,7 @@ class Utils:
         path2walk: folder to scan for files
         fpattern: the file pattern to look for inside the folders
         dir_is_file: option to include the folders in the search, defaults to False
-        unwanted_string: a string to search for and remove from the list of files if present ex: '*_anc*' to remove grs auxiliary NetCDFs
+        unwanted_string: a string to search for and remove from the list of files if present
 
         Returns
         -------

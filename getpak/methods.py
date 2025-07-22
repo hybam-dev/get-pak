@@ -4,15 +4,13 @@ import rasterio
 import numpy as np
 import pandas as pd
 import xarray as xr
-import rioxarray as rxr
 
-from shapely.geometry import box
 from rasterstats import zonal_stats
+
 from getpak.input import GRS
 from getpak.commons import DefaultDicts as dd
 from dask import compute
 from dask import delayed
-
 from getpak import owts_spy_S2_B1_7
 from getpak import owts_spy_S2_B2_7
 from getpak import owts_spm_S2_B1_8A
@@ -555,9 +553,7 @@ class Methods:
         @alg: one the following algorithms available:
             owt: To use the methodology based on OWTs (Tavares et al., 2025)
             gilerson2: 2-band NIR-red ratio by Gilerson et al. (2010)
-            gilerson3: 3-band NIR-red ratio by Gilerson et al. (2010)
-            gons: 2-band semi-analytical by Gons et al. (2003, 2005)
-            gurlin: 2-band squared band ratio by Gurlin et al. (2011)
+            gons: the 2-band semi-analytical by Gons et al. (2003, 2005)
             ndci: Normalised Difference Chlorophyll Index, Mishra and Mishra (2012)
             oc2: NASA Ocean Colour 2-band algorithm, O'Reilly et al. (1998)
 
@@ -600,7 +596,7 @@ class Methods:
                 chla[index] = ifunc.chl_ndci(Red=rrs_dict['Red'].values[index],
                                              RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
-                    lims = [2.5, 250]
+                    lims = [5, 250]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
 
@@ -612,7 +608,7 @@ class Methods:
                 chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
                                                   RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
-                    lims = [2.5, 500]
+                    lims = [5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
 
@@ -622,7 +618,7 @@ class Methods:
                 chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
                                                   RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
-                    lims = [2.5, 500]
+                    lims = [5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
                     chla[index[0][out], index[1][out]] = np.nan
 
@@ -683,7 +679,7 @@ class Methods:
         elif alg == 'gilerson2':
             chla = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
             if limits:
-                lims = [2.5, 500]
+                lims = [5, 500]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
                 chla[out] = np.nan
 
@@ -712,7 +708,7 @@ class Methods:
         elif alg == 'ndci':
             chla = ifunc.chl_ndci(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
             if limits:
-                lims = [2.5, 250]
+                lims = [5, 250]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
                 chla[out] = np.nan
 
@@ -1128,8 +1124,7 @@ class Methods:
         return score(angle)
 
     # Water mask intersecting methods
-    @staticmethod
-    def sch_date_matchups(fst_dates, snd_dates, fst_tile_list, snd_tile_list):
+    def sch_date_matchups(self, fst_dates, snd_dates, fst_tile_list, snd_tile_list):
         """
         Function to search for the match-up dates of two sets of images given two sets of dates.
         This function also writes the directories of the matchups for each date
@@ -1153,21 +1148,14 @@ class Methods:
         for n, date in enumerate(fst_dates):
             arr_index = np.where(np.array(snd_dates) == date)[0]
             if len(arr_index) > 0:
-                # first check if the date is repeating
-                if date not in matches:
-                    matches[date] = {'IMG': fst_tile_list[n], 'WM': snd_tile_list[arr_index[0]]}
-                    str_matches[date] = {'IMG': str(fst_tile_list[n]),
-                                         'WM': str(snd_tile_list[arr_index[0]])}  # redundant backup
-                    dates.append(date)
-                else:
-                    date2 = date + '_2'
-                    matches[date2] = {'IMG': fst_tile_list[n], 'WM': snd_tile_list[arr_index[0]]}
-                    str_matches[date2] = {'IMG': str(fst_tile_list[n]),
-                                         'WM': str(snd_tile_list[arr_index[0]])}  # redundant backup
-                    dates.append(date2)
+                matches[date] = {'IMG': fst_tile_list[n], 'WM': snd_tile_list[arr_index[0]]}
+                str_matches[date] = {'IMG': str(fst_tile_list[n]),
+                                     'WM': str(snd_tile_list[arr_index[0]])}  # redundant backup
+                dates.append(date)
 
         print(f'Found {len(dates)} match-ups\n')
-        
+        # self.log.info(f'Found {len(dates)} match-ups\n')
+
         return matches, str_matches, dates
 
     @staticmethod
@@ -1191,8 +1179,6 @@ class Methods:
         import shutil
         wd_dates, wd_masks_list = [], []
         if isinstance(output_folder, str):
-            # Assure path to file exists, if not, create it.
-            Path(os.path.dirname(output_folder)).mkdir(parents=True, exist_ok=True)
             for root, dirs, files in os.walk(input_folder, topdown=False):
                 for name in files:
                     if name.endswith('.tif') and '_water_mask' in name:
@@ -1203,9 +1189,8 @@ class Methods:
                         shutil.copyfile(f, dest_plus_name)
                         # print(f'COPYING: {f} TO: {dest_plus_name}\n')
                         # appending the date and path
-                        nome = f.parent.parent.name.split('_')  
-                        # check because for MAJA the dates are in position 2,
-                        #  while for other products it is 3
+                        nome = f.parent.parent.name.split(
+                            '_')  # check because for MAJA the dates are in position 2, while for other products it is 3
                         date = nome[1][0:8] if nome[1][0] == '2' else nome[2][0:8]
                         wd_dates.append(date)
                         wd_masks_list.append(Path(dest_plus_name))
@@ -1254,73 +1239,32 @@ class Methods:
 
         return None
 
-    # @staticmethod
-    # def intersect_watermask(rrs_dict, water_mask_dir):
-    #     """
-    #     Find all invalid masks from WaterDetect in a folder, get their dates,
-    #     and copy them to a new folder with a new name. Also writes the path 
-    #     of the water masks for each date
-
-    #     Parameters
-    #     ----------
-    #     @input_folder: folder where the waterdetect masks are
-    #     @output_folder: folder to copy (only) the invalid masks to
-    #     """
-    #     # Loading WD mask
-    #     ref_data = rasterio.open(str(water_mask_dir))
-    #     wd_mask = ref_data.read(1)
-    #     wd_trans = ref_data.transform
-    #     wd_proj = ref_data.crs
-    #     ref_data = None
-
-    #     # intersecting the GRS data with the waterdetect mask
-    #     if wd_trans == rrs_dict.attrs['trans'] and wd_proj == rrs_dict.attrs['proj']:
-    #         img = rrs_dict.where(wd_mask == 1).persist()
-    #         print(f'Done intersection with water mask.')
-    #     else:
-    #         print(f'The water mask in not on the same tile as input image!')
-    #         print(f'W.Mask-trans:{wd_trans} / Rrs-trans:{rrs_dict.attrs["trans"]}')
-    #         print(f'W.Mask-proj:{wd_proj} / Rrs-proj:{rrs_dict.attrs["proj"]}')
-    #         img = None
-    #         sys.exit(1)
-
-    #     return img
-    
     @staticmethod
     def intersect_watermask(rrs_dict, water_mask_dir):
         """
-        Test overlap before reprojecting/intersecting water mask to Rrs data using rioxarray.
+        Find all invalid masks from WaterDetect in a folder, get their dates,
+        and copy them to a new folder with a new name. Also writes the path 
+        of the water masks for each date
 
-        Returns
-        -------
-        xarray.DataArray or None
-            Masked Rrs data if overlap exists, else None
+        Parameters
+        ----------
+        @input_folder: folder where the waterdetect masks are
+        @output_folder: folder to copy (only) the invalid masks to
         """
-        # Load WaterDetect mask
-        wd_mask = rxr.open_rasterio(water_mask_dir, masked=True).squeeze()
+        # Loading WD mask
+        ref_data = rasterio.open(str(water_mask_dir))
+        wd_mask = ref_data.read(1)
+        wd_trans = ref_data.transform
+        wd_proj = ref_data.crs
+        ref_data = None
 
-        # Ensure Rrs has CRS and spatial info
-        rrs_dict = rrs_dict.rio.write_crs(rrs_dict.attrs['proj'], inplace=False)
+        # intersecting the GRS data with the waterdetect mask
+        if wd_trans == rrs_dict.attrs['trans'] and wd_proj == rrs_dict.attrs['proj']:
+            img = rrs_dict.where(wd_mask == 1).persist()
+            print(f'Done intersection with water mask.')
+        else:
+            print(f'The water mask in not on the same tile as input image!')
+            img = None
+            sys.exit(1)
 
-        # Check bounding box overlap before reprojecting
-        wd_bounds = box(*wd_mask.rio.bounds())
-        rrs_bounds = box(*rrs_dict.rio.bounds())
-
-        if not wd_bounds.intersects(rrs_bounds):
-            print("No spatial overlap between Rrs image and water mask.")
-            return None
-
-        # Reproject water mask to match Rrs
-        wd_mask_matched = wd_mask.rio.reproject_match(rrs_dict)
-
-        # Now mask Rrs using the reprojected water mask
-        img = rrs_dict.where(wd_mask_matched == 1).persist()
-
-        # Optional: Check if mask actually selected any pixels
-        # if img['Red'].notnull().sum().compute().item() == 0:
-        if img['Red'].notnull().any().compute() == False:
-            print("Water mask does not cover any valid Rrs pixels.")
-            return None
-        
-        print("Done.")
         return img

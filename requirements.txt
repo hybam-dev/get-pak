@@ -2,7 +2,6 @@ dask
 fiona
 geopandas
 h5netcdf
-libgdal-hdf5 
 importlib-resources
 jupyterlab
 matplotlib
@@ -12,7 +11,6 @@ pandas
 rasterio
 rasterstats==0.19.0
 rioxarray
-shapely
 scikit-image
 scikit-learn
 xarray==2023.12.0

@@ -5,9 +5,6 @@ import rasterio.mask
 import numpy as np
 import xarray as xr
 import geopandas as gpd
-from pathlib import Path
-from osgeo import gdal
-from affine import Affine
 
 from getpak import cluster
 from datetime import datetime
@@ -21,10 +18,9 @@ class Input:
     def __init__(self):
         pass
 
-    def get_input_nc(self, file, sensor='S2MSI', AC_processor='GRS', grs_version=None):
+    def get_input_dict(self, file, sensor='S2MSI', AC_processor='GRS', grs_version=None):
         """
-        Function to open the satellite image in format netCDF
-        It depends on user information of sensor and atmospheric correction
+        Function to open the satellite image, depending on user information of sensor and atmospheric correction
         processor.
         This class is just a wrapper as it uses the different classes for the different ACs to read the input
 
@@ -41,9 +37,6 @@ class Input:
         -------
         @return img: xarray.DataArray containing the Rrs bands.
         """
-
-        # first check if file is NetCDF:
-        self.test_valid_file(file)
 
         if sensor == 'S2MSI' and AC_processor == 'GRS':
             if grs_version:
@@ -75,17 +68,6 @@ class Input:
 
         return img
 
-    @staticmethod
-    def test_valid_file(file):
-        if Path(file).is_file():
-            if file.endswith('.nc'):
-                pass
-            else:
-                print('The input file is not a valid NetCDF. Please use only NetCDF files with GET-Pak!')
-                sys.exit(1)
-        else:
-            print('The path to the input file is not valid!')
-            sys.exit(1)
 
 class GRS:
     """
@@ -106,7 +88,7 @@ class GRS:
         #     self.log = u.create_log_handler(logfile)
 
         # import band names from Commons/DefaultDicts
-        # self.client = cluster.ClusterManager.get_client
+        self.client = cluster.ClusterManager.get_client
         pass
 
     @staticmethod
@@ -150,10 +132,6 @@ class GRS:
         if len(splt) == 9:
             mission, proc_level, date_n_time, proc_ver, r_orbit, tile, prod_disc, cc, aux = basefile.split('_')
             ver, _ = aux.split('.')
-        elif len(splt) == 8:
-            mission, proc_level, date_n_time, proc_ver, r_orbit, tile, prod_disc, aux = basefile.split('_')
-            ver,_ = aux.split('.nc')
-            cc = 'NA'
         else:
             mission, proc_level, date_n_time, proc_ver, r_orbit, tile, aux = basefile.split('_')
             prod_disc, _ = aux.split('.')
@@ -196,7 +174,7 @@ class GRS:
         @return grs: xarray.DataArray containing 11 Rrs bands.
         The band names can be found at getpak.commons.DefaultDicts.grs_v20nc_s2bands
         """
-        # client = self.client()
+        client = self.client()
         meta = self.metadata(grs_nc_file)
         # list of bands
         bands = dd.grs_v20nc_s2bands
@@ -214,13 +192,8 @@ class GRS:
                 grs.attrs["proj"] = proj
                 grs.attrs["trans"] = trans
         elif grs_version == 'v20':
-            # first getting transform using gdal
-            ds = gdal.Open(f'NETCDF:{grs_nc_file}:Rrs')
-            gt = ds.GetGeoTransform()
-            trans = Affine(gt[1], gt[2], gt[0], gt[4], gt[5], gt[3])
-            ds = None
-            # Now opening using xarray
             ds = xr.open_dataset(grs_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf")
+            trans = ds.rio.transform()
             proj = rasterio.crs.CRS.from_wkt(ds['spatial_ref'].attrs.get('crs_wkt'))
             subset_dict = {band: ds['Rrs'].sel(wl=wave).drop_vars(['wl', 'time']) for band, wave in bands.items()}
             grs = xr.Dataset(subset_dict)
@@ -241,7 +214,7 @@ class GRS:
             sys.exit(1)
 
         ds.close()
-        # grs = client.persist(grs)
+        grs = client.persist(grs)
         return grs, meta, proj, trans
  
     def _get_shp_features(self, shp_file, unique_key='id', grs_crs='EPSG:32720'):
