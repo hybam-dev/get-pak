@@ -40,7 +40,7 @@ class Pipelines:
     
     @property
     def tile_id(self):
-        return self.settings.get('processing', 's2_tile')['s2_tile']
+        return self.settings.get('sensors', 's2_tile')['s2_tile']
 
     # @property
     # def grs_files(self):
