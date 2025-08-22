@@ -40,7 +40,7 @@ class Pipelines:
     
     @property
     def tile_id(self):
-        return self.settings.get('sensors', 's2_tile')['s2_tile']
+        return self.settings.get('processing', 's2_tile')['s2_tile']
 
     # @property
     # def grs_files(self):
@@ -49,7 +49,7 @@ class Pipelines:
     
     @property
     def grs_file_version(self):
-        return self.settings.get('sensors', 'grs_version')['grs_version']
+        return self.settings.get('processing', 'grs_version')['grs_version']
 
     @property
     def l2b_functions(self):
@@ -71,7 +71,7 @@ class Pipelines:
         return fx_req_bands         
 
 
-    def get_matchups(self):
+    def get_matchups(self, do_return=False):
         """ GRS L2B + WD + OWT """
         
         u.set_gdal_driver_path() # For cluster use
@@ -105,14 +105,27 @@ class Pipelines:
             fst_tile_list=grs_file_list,
             snd_tile_list=wd_masks_list
         )
-        return matches, str_matches, dates, meta
+
+        self.matches = matches
+        self.str_matches = str_matches
+        self.dates = dates
+        self.meta = meta
+        
+        print('get_matchups: Done.')
+
+        if do_return:
+            return matches, str_matches, dates, meta
+        pass
     
-    def matchups_to_l2b(self, matches, str_matches, dates, meta):
+    def matchups_to_l2b(self):
         """
         TO-DO
         """
+        matches = self.matches
+        str_matches = self.str_matches
+
         results = {}
-        tot = len(matches)
+        tot = len(self.matches)
         sep_trace = u.repeat_to_length('-', 22)
         imgs_out = os.path.join(self.output_folder, self.tile_id)
         # Creating output folder structure
@@ -279,7 +292,9 @@ if __name__=='__main__':
 
     p = Pipelines()
     
-    p.run_l2b_from_settings()
+    p.get_matchups()
+
+    p.matchups_to_l2b()
     
     t_hour, t_min, t_sec,_ = u.tac()
     print(f'Done. \nElapsed execution time: {t_hour}h : {t_min}m : {t_sec}s')
