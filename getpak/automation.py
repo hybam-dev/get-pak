@@ -1,7 +1,9 @@
 import os
 import ast
+import json
 import inspect
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from pathlib import Path
@@ -39,8 +41,22 @@ class Pipelines:
         return self.settings.get('client_folder', 'wmask_folder')['wmask_folder']
     
     @property
+    def roi_vector(self):
+        return self.settings.get('client_folder', 'roi_vector')['roi_vector']
+    
+    @property
+    def compute_l2b(self):
+        return self.settings.get('processing', 'compute_l2b')['compute_l2b']
+    
+    @property
+    def make_report(self):
+        return self.settings.get('processing','make_report')['make_report']
+
+    @property
     def tile_id(self):
         return self.settings.get('sensors', 's2_tile')['s2_tile']
+    
+    
 
     # @property
     # def grs_files(self):
@@ -129,9 +145,9 @@ class Pipelines:
         sep_trace = u.repeat_to_length('-', 22)
         imgs_out = os.path.join(self.output_folder, self.tile_id)
         # Creating output folder structure
-        Path(os.path.join(imgs_out, "n_pix")).mkdir(parents=True, exist_ok=True)
+        Path(os.path.join(imgs_out, "npix")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "OWT")).mkdir(parents=True, exist_ok=True)
-        Path(os.path.join(imgs_out, "OWT_SPM")).mkdir(parents=True, exist_ok=True)
+        Path(os.path.join(imgs_out, "OWTSPM")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "Chla")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "Turb")).mkdir(parents=True, exist_ok=True)
         
@@ -142,9 +158,9 @@ class Pipelines:
             results[key] = {'IMG': str_matches[key]['IMG'],
                             'WM': str_matches[key]['WM']}
             
-            results[key].update({'n_pix': 'empty'})
+            results[key].update({'npix': 'empty'})
             results[key].update({'OWT': 'empty'})
-            results[key].update({'OWT_SPM': 'empty'})   
+            results[key].update({'OWTSPM': 'empty'})   
             results[key].update({'Chla': 'empty'})
             results[key].update({'Turb': 'empty'})
             
@@ -204,9 +220,9 @@ class Pipelines:
                     # n pixels    
                     pixels[3,1] = len(owt_classes[0,:,:]==1)
                     # writing the file
-                    str_output_file = os.path.join(imgs_out, "n_pix/n_pixels_" + key + ".txt")
+                    str_output_file = os.path.join(imgs_out, "npix/npixels_" + key + ".txt")
                     np.savetxt(str_output_file, pixels, fmt='%s', delimiter=';')
-                    results[key].update({'n_pix': str_output_file})
+                    results[key].update({'npix': str_output_file})
 
                     # writing
                     no_data = 0
@@ -216,9 +232,9 @@ class Pipelines:
                     r.array2tiff(ndarray_data=owt_classes[0,:,:].astype('uint8'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
                     results[key].update({'OWT': str_output_file})
 
-                    str_output_file = os.path.join(imgs_out, "OWT_SPM/OWT_SPM_" + key + ".tif")
+                    str_output_file = os.path.join(imgs_out, "OWTSPM/OWTSPM_" + key + ".tif")
                     r.array2tiff(ndarray_data=classes_turb.astype('uint8'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
-                    results[key].update({'OWT_SPM': str_output_file})
+                    results[key].update({'OWTSPM': str_output_file})
 
                     # generating the chla product from these classes and weights
                     print(f'Calculating the chla for each dominant OWT and then the blended chla product...')
@@ -250,8 +266,11 @@ class Pipelines:
             except Exception as e:
                 print(f'Error processing {key}: {e}')
                 continue
-
-        return results
+        # Saving metadata json file with resulting file paths
+        res_file_out = os.path.join(imgs_out, self.INSTANCE_TIME_TAG + ".json")
+        with open(res_file_out, 'w') as f:
+            json.dump(results, f)
+        pass
 
     def run_l2b_raw(self):
         """
@@ -286,15 +305,126 @@ class Pipelines:
 
         print('Done.')
         pass
+    
+    @staticmethod
+    def get_uid(fname):
+        fragments = fname.split('_')
+        if len(fragments) < 3:
+            uid = fragments[1].split('.')[0] + '.'
+        elif len(fragments) > 2:
+            uid = fragments[1] + '_' + fragments[2].split('.')[0] + '.'
+        return uid
+    
+    @staticmethod
+    def _search_uid(uid, path):
+        result = [os.path.join(path,file) for file in os.listdir(path) if uid in file]
+        return result
+    
+    @staticmethod
+    def match_file_uid(out_folders_path, uid):
+
+        # Build dict of paths to each parameter
+        params = {keys : os.path.join(out_folders_path , keys) for keys in os.listdir(out_folders_path)}
+
+        # Internal function, search uid presence in file name for a given path and return it.
+        def _search_uid(uid, path):
+            result = [os.path.join(path,file) for file in os.listdir(path) if uid in file]
+            if len(result) > 1:
+                print('Inconsistent matchup > 1.')
+            else:
+                # pop the element out of the list.
+                result = result[0]
+            return result
+
+        # call the search function for each uid and L2B parameter
+        match_results = {par : _search_uid(uid, path) for par, path in params.items()}
+
+        return match_results
+
+    def line_builder(self):
+        # Get all UIDs from npix in the output folder
+        uids_list = [self.get_uid(f) for f in os.listdir(os.path.join(self.output_folder,'npix'))]
+
+        sheet = { uid.split('.')[0] : self.match_file_uid(self.output_folder, uid) for uid in uids_list }
+        
+        # # Clear the trailing dot at the end of each UID
+        # uids_list = [uid.split('.')[0] for uid in uids_list]
+        return sheet
+
+    @staticmethod
+    def build_excel(itermediary_dict, file_to_save):
+        df = pd.DataFrame(itermediary_dict).T
+        df.drop(columns=['npix', 'OWT', 'OWTSPM', 'Chla', 'Turb'], inplace=True)
+        ## ALTERNATIVE: Move coumns to end of DF
+        # df = df[[c for c in df if c not in cols_to_move] + cols_to_move]
+        df.to_excel(file_to_save)
+        pass
+    
+    # ,---------,
+    # | PARSERS |
+    # '---------'
+    
+    @staticmethod
+    def _parse_npix(path_to_npix):
+        df = pd.read_csv(path_to_npix, sep=";", header=None).T
+        df.columns = df.iloc[0]  # get column names from the first line
+        df.drop(0, axis=0, inplace=True)  # drop the first row 
+        dict_df = df.to_dict()
+        dict_df = {key:val[1] for key,val in dict_df.items()}
+        return dict_df
+    
+    @staticmethod
+    def _parse_tifs(path_to_tif, shp_file, prefix='var'):
+        stats = m.shp_stats(tif_file=path_to_tif, shp_poly=shp_file)
+
+        def _fix_scale(value):
+            if value is not None:
+                value = round(value/100,2)
+            return value
+            
+        results = {
+            prefix + '_min' : _fix_scale(stats['min']),
+            prefix + '_max' : _fix_scale(stats['max']),
+            prefix + '_mean' : _fix_scale(stats['mean']),
+            prefix + '_count' : stats['count'],
+            prefix + '_std' : _fix_scale(stats['std']),
+            prefix + '_median' : _fix_scale(stats['median']),
+        }
+        return results
+
+    def build_report(self):
+        
+        print(f'Building intermediary dictionary with the output folder : {self.output_folder}')
+        itermediary_batch_dict = self.line_builder()
+        
+        print(f'Timeseries will be computed inside vector: {self.roi_vector}')
+        # CALL PARSERS
+        # One-liner fetch Turb data inside given path
+        _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Turb'],self.roi_vector, prefix='Turb')) for key in itermediary_batch_dict.keys()]
+        # One-liner fetch Chla data inside given path
+        _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Chla'],self.roi_vector, prefix='Chla')) for key in itermediary_batch_dict.keys()]
+        # One-liner fetch npix data inside given path
+        _ = [itermediary_batch_dict[key].update(self._parse_npix(itermediary_batch_dict[key]['npix'])) for key in itermediary_batch_dict.keys()]
+
+        print(f'Writing excel file at: {self.output_folder}')
+        xlsx_target = os.path.join(self.output_folder, self.INSTANCE_TIME_TAG + '.xlsx')
+        self.build_excel(itermediary_batch_dict, file_to_save=xlsx_target)
+        pass
+
 
 if __name__=='__main__':
     st_time = u.tic()
 
     p = Pipelines()
     
-    p.get_matchups()
+    if p.compute_l2b == 'True':
+        print('Compute L2B set to True.')
+        p.get_matchups()
+        p.matchups_to_l2b()
 
-    p.matchups_to_l2b()
+    if p.make_report == 'True':
+        print('Generating report.')
+        p.build_report()
     
     t_hour, t_min, t_sec,_ = u.tac()
     print(f'Done. \nElapsed execution time: {t_hour}h : {t_min}m : {t_sec}s')

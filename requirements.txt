@@ -2,7 +2,7 @@ dask
 fiona
 geopandas
 h5netcdf
-libgdal-hdf5 
+openpyxl
 importlib-resources
 jupyterlab
 matplotlib
