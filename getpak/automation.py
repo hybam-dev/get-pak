@@ -343,7 +343,7 @@ class Pipelines:
 
     def line_builder(self):
         # Get all UIDs from npix in the output folder
-        uids_list = [self.get_uid(f) for f in os.listdir(os.path.join(self.output_folder,'npix'))]
+        uids_list = [self.get_uid(f) for f in os.listdir(os.path.join(self.output_folder, self.tile_id, 'npix'))]
 
         sheet = { uid.split('.')[0] : self.match_file_uid(self.output_folder, uid) for uid in uids_list }
         
@@ -407,7 +407,7 @@ class Pipelines:
         _ = [itermediary_batch_dict[key].update(self._parse_npix(itermediary_batch_dict[key]['npix'])) for key in itermediary_batch_dict.keys()]
 
         print(f'Writing excel file at: {self.output_folder}')
-        xlsx_target = os.path.join(self.output_folder, self.INSTANCE_TIME_TAG + '.xlsx')
+        xlsx_target = os.path.join(self.output_folder, self.tile_id, self.INSTANCE_TIME_TAG + '.xlsx')
         self.build_excel(itermediary_batch_dict, file_to_save=xlsx_target)
         pass
 
