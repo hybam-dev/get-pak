@@ -1,4 +1,5 @@
 import os
+import sys
 import ast
 import json
 import inspect
@@ -344,8 +345,12 @@ class Pipelines:
     def line_builder(self):
         # Get all UIDs from npix in the output folder
         uids_list = [self.get_uid(f) for f in os.listdir(os.path.join(self.output_folder, self.tile_id, 'npix'))]
-
-        sheet = { uid.split('.')[0] : self.match_file_uid(self.output_folder, uid) for uid in uids_list }
+        l_size = len(uids_list)
+        if l_size > 1 : 
+            sheet = { uid.split('.')[0] : self.match_file_uid(self.output_folder, self.tile_id, uid) for uid in uids_list }
+        else:
+            print(f'Insuficient amount of {l_size} files to build a list, exiting..')
+            sys.exit(1)
         
         # # Clear the trailing dot at the end of each UID
         # uids_list = [uid.split('.')[0] for uid in uids_list]
