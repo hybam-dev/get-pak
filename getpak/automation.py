@@ -325,11 +325,11 @@ class Pipelines:
     def match_file_uid(out_folders_path, uid):
 
         # Build dict of paths to each parameter
-        params = {keys : os.path.join(out_folders_path , keys) for keys in os.listdir(out_folders_path)}
+        params = {keys : os.path.join(out_folders_path , keys) for keys in os.listdir(out_folders_path) if os.path.isdir(os.path.join(out_folders_path, keys))}
 
         # Internal function, search uid presence in file name for a given path and return it.
-        def _search_uid(uid, path):
-            result = [os.path.join(path,file) for file in os.listdir(path) if uid in file]
+        def _search_uid(uid, fpath):
+            result = [os.path.join(fpath,file) for file in os.listdir(fpath) if uid in file]
             if len(result) > 1:
                 print('Inconsistent matchup > 1.')
             else:
@@ -338,7 +338,7 @@ class Pipelines:
             return result
 
         # call the search function for each uid and L2B parameter
-        match_results = {par : _search_uid(uid, path) for par, path in params.items()}
+        match_results = {par : _search_uid(uid, mpath) for par, mpath in params.items()}
 
         return match_results
 
