@@ -245,9 +245,14 @@ class Pipelines:
                     print(f'Calculating turbidity...')
                     turb = m.turb(rrs_dict=grs, class_owt_spt=classes_turb, alg='owt', limits=True)
 
+                    # calculating SPM_S3
+                    print(f'Calculating Hybrid-SPM...')
+                    hyspm = m.turb(rrs_dict=grs, class_owt_spt=classes_turb, alg='Hybrid', limits=True)
+
                     # removing values for OWT1
                     chla[np.where(owt_classes[0,:,:]==1)] = 0
                     turb[np.where(owt_classes[0,:,:]==1)] = 0
+                    hyspm[np.where(owt_classes[0,:,:]==1)] = 0
                     
                     # writing
                     print(f'Writing the rasters of the water quality parameters...')
@@ -259,14 +264,20 @@ class Pipelines:
                     str_output_file = os.path.join(imgs_out, "Turb/Turb_" + key + ".tif")
                     r.array2tiff(ndarray_data=(turb*100).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
                     results[key].update({'Turb': str_output_file})
+
+                    str_output_file = os.path.join(imgs_out, "HySPM/HySPM_" + key + ".tif")
+                    r.array2tiff(ndarray_data=(hyspm*100).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
+                    results[key].update({'HySPM': str_output_file})
                 
                 stacked = None
                 grs.close()
                 grs_t.close()
             
             except Exception as e:
+                print(e)
                 print(f'Error processing {key}: {e}')
                 continue
+        
         # Saving metadata json file with resulting file paths
         res_file_out = os.path.join(imgs_out, self.INSTANCE_TIME_TAG + ".json")
         with open(res_file_out, 'w') as f:
@@ -419,7 +430,7 @@ class Pipelines:
         print('Fetching L2B pixel metadata..')
         _ = [itermediary_batch_dict[key].update(self._parse_npix(itermediary_batch_dict[key]['npix'])) for key in itermediary_batch_dict.keys()]
         print('Done.')
-        
+
         print(f'Writing excel file at: {self.output_folder}')
         xlsx_target = os.path.join(self.output_folder, self.tile_id, self.INSTANCE_TIME_TAG + '.xlsx')
         self.build_excel(itermediary_batch_dict, file_to_save=xlsx_target)

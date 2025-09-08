@@ -873,7 +873,7 @@ class Methods:
         elif alg == 'Hybrid':
             turb = ifunc.spm_s3(Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
             if limits:
-                lims = [0.1, 2000]
+                lims = [0.001, 3000]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
                 turb[out] = np.nan
 
@@ -947,12 +947,7 @@ class Methods:
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
                 turb[out] = np.nan
 
-        elif alg == 'Hybrid':
-            turb = ifunc.spm_s3(Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
-            if limits:
-                lims = [0.1, 1000]
-                out = np.where((turb < lims[0]) | (turb > lims[1]))
-                turb[out] = np.nan
+        
 
         elif alg == 'Jiang':
             if mode_Jiang == 'pixel':
