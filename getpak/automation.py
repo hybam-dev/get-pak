@@ -403,14 +403,23 @@ class Pipelines:
         itermediary_batch_dict = self.line_builder()
         
         print(f'Timeseries will be computed inside vector: {self.roi_vector}')
+        
         # CALL PARSERS
         # One-liner fetch Turb data inside given path
+        print('Fetching Turbidity L2B data..')
         _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Turb'],self.roi_vector, prefix='Turb')) for key in itermediary_batch_dict.keys()]
-        # One-liner fetch Chla data inside given path
-        _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Chla'],self.roi_vector, prefix='Chla')) for key in itermediary_batch_dict.keys()]
-        # One-liner fetch npix data inside given path
-        _ = [itermediary_batch_dict[key].update(self._parse_npix(itermediary_batch_dict[key]['npix'])) for key in itermediary_batch_dict.keys()]
+        print('Done.')
 
+        # One-liner fetch Chla data inside given path
+        print('Fetching Chl-a L2B data..')
+        _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Chla'],self.roi_vector, prefix='Chla')) for key in itermediary_batch_dict.keys()]
+        print('Done.')
+
+        # One-liner fetch npix data inside given path
+        print('Fetching L2B pixel metadata..')
+        _ = [itermediary_batch_dict[key].update(self._parse_npix(itermediary_batch_dict[key]['npix'])) for key in itermediary_batch_dict.keys()]
+        print('Done.')
+        
         print(f'Writing excel file at: {self.output_folder}')
         xlsx_target = os.path.join(self.output_folder, self.tile_id, self.INSTANCE_TIME_TAG + '.xlsx')
         self.build_excel(itermediary_batch_dict, file_to_save=xlsx_target)
