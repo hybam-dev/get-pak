@@ -373,6 +373,7 @@ class Pipelines:
         df.drop(columns=['npix', 'OWT', 'OWTSPM', 'Chla', 'Turb'], inplace=True)
         ## ALTERNATIVE: Move coumns to end of DF
         # df = df[[c for c in df if c not in cols_to_move] + cols_to_move]
+        df.sort_index(inplace=True)
         df.to_excel(file_to_save)
         pass
     
