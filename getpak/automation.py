@@ -42,8 +42,8 @@ class Pipelines:
         return self.settings.get('client_folder', 'wmask_folder')['wmask_folder']
     
     @property
-    def roi_vector(self):
-        return self.settings.get('client_folder', 'roi_vector')['roi_vector']
+    def roi_vectors(self):
+        return self.settings['roi_vectors']
     
     @property
     def compute_l2b(self):
@@ -416,36 +416,37 @@ class Pipelines:
         print(f'Building intermediary dictionary with the output folder : {self.output_folder}')
         itermediary_batch_dict = self.line_builder()
         
-        print(f'Timeseries will be computed inside vector: {self.roi_vector}')
-        
+        for roi_vector in self.roi_vectors:
+            print(f'Computing timeseries inside vector: {roi_vector}')
+            roi_name = os.path.basename(roi_vector).split('.')[0]
 
-        # ,--------------,
-        # | CALL PARSERS |
-        # '--------------'        
-        # One-liner fetch Turb data inside given path
-        print('Fetching SPM L2B data..')
-        _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['HySPM'],self.roi_vector, prefix='HySPM')) for key in itermediary_batch_dict.keys()]
-        print('Done.')
+            # ,--------------,
+            # | CALL PARSERS |
+            # '--------------'        
+            # One-liner fetch Turb data inside given path
+            print('Fetching SPM L2B data..')
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['HySPM'],roi_vector, prefix='HySPM')) for key in itermediary_batch_dict.keys()]
+            print('Done.')
 
-        # One-liner fetch Turb data inside given path
-        print('Fetching Turbidity L2B data..')
-        _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Turb'],self.roi_vector, prefix='Turb')) for key in itermediary_batch_dict.keys()]
-        print('Done.')
+            # One-liner fetch Turb data inside given path
+            print('Fetching Turbidity L2B data..')
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Turb'],roi_vector, prefix='Turb')) for key in itermediary_batch_dict.keys()]
+            print('Done.')
 
-        # One-liner fetch Chla data inside given path
-        print('Fetching Chl-a L2B data..')
-        _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Chla'],self.roi_vector, prefix='Chla')) for key in itermediary_batch_dict.keys()]
-        print('Done.')
+            # One-liner fetch Chla data inside given path
+            print('Fetching Chl-a L2B data..')
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Chla'],roi_vector, prefix='Chla')) for key in itermediary_batch_dict.keys()]
+            print('Done.')
 
-        # One-liner fetch npix data inside given path
-        print('Fetching L2B pixel metadata..')
-        _ = [itermediary_batch_dict[key].update(self._parse_npix(itermediary_batch_dict[key]['npix'])) for key in itermediary_batch_dict.keys()]
-        print('Done.')
+            # One-liner fetch npix data inside given path
+            print('Fetching L2B pixel metadata..')
+            _ = [itermediary_batch_dict[key].update(self._parse_npix(itermediary_batch_dict[key]['npix'])) for key in itermediary_batch_dict.keys()]
+            print('Done.')
 
-        print(f'Writing excel file at: {self.output_folder}')
-        xlsx_target = os.path.join(self.output_folder, self.tile_id, self.INSTANCE_TIME_TAG + '.xlsx')
-        self.build_excel(itermediary_batch_dict, file_to_save=xlsx_target)
-        pass
+            print(f'Writing excel file at: {self.output_folder}')
+            xlsx_target = os.path.join(self.output_folder, self.tile_id, self.INSTANCE_TIME_TAG + '_' + roi_name + '.xlsx')
+            self.build_excel(itermediary_batch_dict, file_to_save=xlsx_target)
+            pass
 
 
 if __name__=='__main__':

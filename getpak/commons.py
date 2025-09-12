@@ -51,7 +51,7 @@ class Utils:
     
     @staticmethod
     def read_config():
-        config = ConfigParser()
+        config = ConfigParser(converters={'list': lambda x: [i.strip() for i in x.split(',')]})
         # get the path to config.ini in the root folder
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'settings.ini')
         print(f'Atempting to read config file: {config_path}')
@@ -68,6 +68,12 @@ class Utils:
             # Convert section to a dictionary
             config_dict[section] = dict(config[section])
         print('Done.')
+
+        # Parse the list of vectors
+        # https://stackoverflow.com/questions/335695/lists-in-configparser
+        
+        vector_list = config.getlist('vector_list', 'roi_vectors')
+        config_dict['roi_vectors'] = vector_list
         return config_dict
 
     @staticmethod
