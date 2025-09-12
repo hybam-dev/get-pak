@@ -151,6 +151,7 @@ class Pipelines:
         Path(os.path.join(imgs_out, "OWTSPM")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "Chla")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "Turb")).mkdir(parents=True, exist_ok=True)
+        Path(os.path.join(imgs_out, "HySPM")).mkdir(parents=True, exist_ok=True)
         
         for n, key in enumerate(matches):
             print(sep_trace)
@@ -164,6 +165,7 @@ class Pipelines:
             results[key].update({'OWTSPM': 'empty'})   
             results[key].update({'Chla': 'empty'})
             results[key].update({'Turb': 'empty'})
+            results[key].update({'HySPM': 'empty'})
             
             try:
                 print(f'Loading GRS data...')
@@ -370,7 +372,7 @@ class Pipelines:
     @staticmethod
     def build_excel(itermediary_dict, file_to_save):
         df = pd.DataFrame(itermediary_dict).T
-        df.drop(columns=['npix', 'OWT', 'OWTSPM', 'Chla', 'Turb'], inplace=True)
+        df.drop(columns=['npix', 'OWT', 'OWTSPM', 'Chla', 'Turb', 'HySPM'], inplace=True)
         ## ALTERNATIVE: Move coumns to end of DF
         # df = df[[c for c in df if c not in cols_to_move] + cols_to_move]
         df.sort_index(inplace=True)
@@ -416,7 +418,15 @@ class Pipelines:
         
         print(f'Timeseries will be computed inside vector: {self.roi_vector}')
         
-        # CALL PARSERS
+
+        # ,--------------,
+        # | CALL PARSERS |
+        # '--------------'        
+        # One-liner fetch Turb data inside given path
+        print('Fetching SPM L2B data..')
+        _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['HySPM'],self.roi_vector, prefix='HySPM')) for key in itermediary_batch_dict.keys()]
+        print('Done.')
+
         # One-liner fetch Turb data inside given path
         print('Fetching Turbidity L2B data..')
         _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Turb'],self.roi_vector, prefix='Turb')) for key in itermediary_batch_dict.keys()]
