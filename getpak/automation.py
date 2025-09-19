@@ -152,6 +152,8 @@ class Pipelines:
         Path(os.path.join(imgs_out, "Chla")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "Turb")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "HySPM")).mkdir(parents=True, exist_ok=True)
+        Path(os.path.join(imgs_out, "Red")).mkdir(parents=True, exist_ok=True)
+        Path(os.path.join(imgs_out, "NIR2")).mkdir(parents=True, exist_ok=True)
         
         for n, key in enumerate(matches):
             print(sep_trace)
@@ -166,6 +168,8 @@ class Pipelines:
             results[key].update({'Chla': 'empty'})
             results[key].update({'Turb': 'empty'})
             results[key].update({'HySPM': 'empty'})
+            results[key].update({'Red': 'empty'})
+            results[key].update({'Nir2': 'empty'})
             
             try:
                 print(f'Loading GRS data...')
@@ -251,6 +255,11 @@ class Pipelines:
                     print(f'Calculating Hybrid-SPM...')
                     hyspm = m.turb(rrs_dict=grs, class_owt_spt=classes_turb, alg='Hybrid', limits=True)
 
+                    # Copying Rrs
+                    print(f'Copying Rrs from RED-665nm and NIR2-865nm...')
+                    red = grs['Red']
+                    nir2 = grs['Nir2']
+
                     # removing values for OWT1
                     chla[np.where(owt_classes[0,:,:]==1)] = 0
                     turb[np.where(owt_classes[0,:,:]==1)] = 0
@@ -270,6 +279,16 @@ class Pipelines:
                     str_output_file = os.path.join(imgs_out, "HySPM/HySPM_" + key + ".tif")
                     r.array2tiff(ndarray_data=(hyspm*100).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
                     results[key].update({'HySPM': str_output_file})
+
+                    str_output_file = os.path.join(imgs_out, "Red/Red_" + key + ".tif")
+                    r.array2tiff(ndarray_data=(red*100).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
+                    results[key].update({'Red': str_output_file})
+
+                    str_output_file = os.path.join(imgs_out, "Nir2/Nir2_" + key + ".tif")
+                    r.array2tiff(ndarray_data=(nir2*100).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
+                    results[key].update({'Nir2': str_output_file})
+
+
                 
                 stacked = None
                 grs.close()
@@ -372,7 +391,7 @@ class Pipelines:
     @staticmethod
     def build_excel(itermediary_dict, file_to_save):
         df = pd.DataFrame(itermediary_dict).T
-        df.drop(columns=['npix', 'OWT', 'OWTSPM', 'Chla', 'Turb', 'HySPM'], inplace=True)
+        df.drop(columns=['npix', 'OWT', 'OWTSPM', 'Chla', 'Turb', 'HySPM', 'Red', 'Nir2'], inplace=True)
         ## ALTERNATIVE: Move coumns to end of DF
         # df = df[[c for c in df if c not in cols_to_move] + cols_to_move]
         df.sort_index(inplace=True)
@@ -423,22 +442,28 @@ class Pipelines:
             # ,--------------,
             # | CALL PARSERS |
             # '--------------'        
-            # One-liner fetch Turb data inside given path
+            
+            # One-liners to fetch pixel data inside ROI in a given path of imgs
+            print('Fetching Rrs-665nm data..')
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Red'],roi_vector, prefix='Red')) for key in itermediary_batch_dict.keys()]
+            print('Done.')
+
+            print('Fetching Rrs-865nm data..')
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Nir2'],roi_vector, prefix='Nir2')) for key in itermediary_batch_dict.keys()]
+            print('Done.')
+
             print('Fetching SPM L2B data..')
             _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['HySPM'],roi_vector, prefix='HySPM')) for key in itermediary_batch_dict.keys()]
             print('Done.')
 
-            # One-liner fetch Turb data inside given path
             print('Fetching Turbidity L2B data..')
             _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Turb'],roi_vector, prefix='Turb')) for key in itermediary_batch_dict.keys()]
             print('Done.')
 
-            # One-liner fetch Chla data inside given path
             print('Fetching Chl-a L2B data..')
             _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Chla'],roi_vector, prefix='Chla')) for key in itermediary_batch_dict.keys()]
             print('Done.')
 
-            # One-liner fetch npix data inside given path
             print('Fetching L2B pixel metadata..')
             _ = [itermediary_batch_dict[key].update(self._parse_npix(itermediary_batch_dict[key]['npix'])) for key in itermediary_batch_dict.keys()]
             print('Done.')
