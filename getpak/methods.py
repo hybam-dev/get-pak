@@ -1019,6 +1019,19 @@ class Methods:
     #     return secchi
 
     @staticmethod
+    def _quick_rrs(rrs_dict,bname='Red'):
+        """
+        Force water leaving reflectance to 0.0 ~ 1.0 range and return the cleaned band itself.
+        """
+        rrs = rrs_dict[bname].values
+        lims = [0.0, 1.0]
+        out = np.where((rrs < lims[0]) | (rrs > lims[1]))
+        rrs[np.where(np.isnan(rrs))] = 0
+        rrs[out] = 0
+        return rrs
+
+
+    @staticmethod
     def water_colour(rrs_dict, sensor='S2MSI', bands=['Blue', 'Green', 'Red', 'RedEdge1']):
         """
         Function to calculate the water colour of each pixel based on the Forel-Ule scale, using the bands of Sentinel-2

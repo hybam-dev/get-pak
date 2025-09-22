@@ -153,7 +153,7 @@ class Pipelines:
         Path(os.path.join(imgs_out, "Turb")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "HySPM")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "Red")).mkdir(parents=True, exist_ok=True)
-        Path(os.path.join(imgs_out, "NIR2")).mkdir(parents=True, exist_ok=True)
+        Path(os.path.join(imgs_out, "Nir2")).mkdir(parents=True, exist_ok=True)
         
         for n, key in enumerate(matches):
             print(sep_trace)
@@ -189,6 +189,11 @@ class Pipelines:
                 print(f'Filtering bad quality pixels...')
                 grs = m.filter_pixels(rrs_dict=grs, neg_rrs='Red', low_rrs=True, low_rrs_thresh=0.002, low_rrs_bands=['Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2'])
 
+                # Clear and get Rrs
+                print(f'Obtaining Rrs from RED-665nm and NIR2-865nm...')
+                red = m._quick_rrs(rrs_dict=grs, bname='Red')
+                nir2 = m._quick_rrs(rrs_dict=grs, bname='Nir2')
+
                 # number of pixels
                 pixels[0,1] = m.npix
                 pixels[1,1] = m.negpix
@@ -202,6 +207,7 @@ class Pipelines:
                     print('No valid pixels in this image, continuing to the next.')
                     continue
                 else:
+                    
                     # classifying the OWT of each reservoir
                     print(f'Calculating the OWT weights for each pixel and writing the raster file...')
                     owt_classes, owt_weights = m.classify_owt_chla_weights(class_px=class_px, angles=angles, n=3)
@@ -255,11 +261,6 @@ class Pipelines:
                     print(f'Calculating Hybrid-SPM...')
                     hyspm = m.turb(rrs_dict=grs, class_owt_spt=classes_turb, alg='Hybrid', limits=True)
 
-                    # Copying Rrs
-                    print(f'Copying Rrs from RED-665nm and NIR2-865nm...')
-                    red = grs['Red']
-                    nir2 = grs['Nir2']
-
                     # removing values for OWT1
                     chla[np.where(owt_classes[0,:,:]==1)] = 0
                     turb[np.where(owt_classes[0,:,:]==1)] = 0
@@ -281,11 +282,11 @@ class Pipelines:
                     results[key].update({'HySPM': str_output_file})
 
                     str_output_file = os.path.join(imgs_out, "Red/Red_" + key + ".tif")
-                    r.array2tiff(ndarray_data=(red*100).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
+                    r.array2tiff(ndarray_data=(red*10000).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
                     results[key].update({'Red': str_output_file})
 
                     str_output_file = os.path.join(imgs_out, "Nir2/Nir2_" + key + ".tif")
-                    r.array2tiff(ndarray_data=(nir2*100).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
+                    r.array2tiff(ndarray_data=(nir2*10000).astype('uint16'), str_output_file=str_output_file, transform=grs.attrs['trans'], projection=grs.attrs['proj'], no_data=no_data)
                     results[key].update({'Nir2': str_output_file})
 
 
@@ -412,21 +413,21 @@ class Pipelines:
         return dict_df
     
     @staticmethod
-    def _parse_tifs(path_to_tif, shp_file, prefix='var'):
+    def _parse_tifs(path_to_tif, shp_file, prefix='var', scale_factor=100):
         stats = m.shp_stats(tif_file=path_to_tif, shp_poly=shp_file)
 
-        def _fix_scale(value):
+        def _fix_scale(value,factor=100):
             if value is not None:
-                value = round(value/100,2)
+                value = round(value/factor,2)
             return value
             
         results = {
-            prefix + '_min' : _fix_scale(stats['min']),
-            prefix + '_max' : _fix_scale(stats['max']),
-            prefix + '_mean' : _fix_scale(stats['mean']),
+            prefix + '_min' : _fix_scale(stats['min'], factor=scale_factor),
+            prefix + '_max' : _fix_scale(stats['max'], factor=scale_factor),
+            prefix + '_mean' : _fix_scale(stats['mean'], factor=scale_factor),
             prefix + '_count' : stats['count'],
-            prefix + '_std' : _fix_scale(stats['std']),
-            prefix + '_median' : _fix_scale(stats['median']),
+            prefix + '_std' : _fix_scale(stats['std'], factor=scale_factor),
+            prefix + '_median' : _fix_scale(stats['median'], factor=scale_factor),
         }
         return results
 
@@ -445,11 +446,11 @@ class Pipelines:
             
             # One-liners to fetch pixel data inside ROI in a given path of imgs
             print('Fetching Rrs-665nm data..')
-            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Red'],roi_vector, prefix='Red')) for key in itermediary_batch_dict.keys()]
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Red'],roi_vector, prefix='Red', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
             print('Done.')
 
             print('Fetching Rrs-865nm data..')
-            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Nir2'],roi_vector, prefix='Nir2')) for key in itermediary_batch_dict.keys()]
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Nir2'],roi_vector, prefix='Nir2', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
             print('Done.')
 
             print('Fetching SPM L2B data..')
