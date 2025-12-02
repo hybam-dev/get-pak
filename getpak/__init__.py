@@ -1,9 +1,9 @@
 __package__ = 'getpak'
-__version__ = '0.0.5'
+__version__ = '0.0.6'
 __all__ = ['automation', 'cluster', 'commons', 'input', 'inversion_functions', 'methods', 'output', 'validation']
 
 import json
-import importlib_resources
+import importlib.resources as importlib_resources
 
 # Import CRS projection information from /data/s2_proj_ref.json
 s2proj_binary_data = importlib_resources.files(__name__).joinpath('data/s2_proj_ref.json')

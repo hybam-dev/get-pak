@@ -86,7 +86,7 @@ class Raster:
         pass
 
     @staticmethod
-    def array2tiff(ndarray_data, str_output_file, transform, projection, no_data=-1, compression='COMPRESS=PACKBITS'):
+    def array2tiff(ndarray_data, str_output_file, transform, projection, no_data=-1, compression='LZW'):
         """
         Given an input ndarray and the desired projection parameters, create a raster.tif using GDT_Float32.
 
@@ -101,6 +101,11 @@ class Raster:
 
         @return: None (If all goes well, array2tiff should pass and generate a file inside @str_output_file)
         """
+        # first, check if the vector is not float64
+
+        if ndarray_data.dtype == 'float64':
+            ndarray_data = ndarray_data.astype('float32')
+
         with rasterio.open(fp=str_output_file,
                            mode='w',
                            driver='GTiff',
@@ -111,7 +116,9 @@ class Raster:
                            crs=projection,
                            transform=transform,
                            nodata=no_data,
-                           options=[compression]) as file:
+                           compress=compression,
+                           tiled=True,
+                           predictor=2) as file:
             file.write(ndarray_data, 1)
         pass
 

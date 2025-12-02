@@ -105,7 +105,7 @@ def spm_dogliotti(Red, Nir2):
     """Switching semi-analytical-algorithm computes turbidity from red and NIR band
 
     following Dogliotti et al., 2015
-    :param Red : surface Reflectances Red  band [dl]
+    :param Red : surface Reflectances Red band [dl]
     :param Nir2: surface Reflectances NIR band [dl]
     :return: turbidity in FNU
     """
@@ -114,8 +114,8 @@ def spm_dogliotti(Red, Nir2):
     a_low, c_low = 228.1, 0.1641
     a_high, c_high = 3078.9, 0.2112
 
-    t_low = spm_nechad(Red, a_low, c_low)
-    t_high = spm_nechad(Nir2, a_high, c_high)
+    t_low = spm_nechad(Red, a_low, 0, c_low)
+    t_high = spm_nechad(Nir2, a_high, 0, c_high)
     w = (Red - limit_inf) / (limit_sup - limit_inf)
     t_mixing = (1 - w) * t_low + w * t_high
 
@@ -137,8 +137,8 @@ def spm_dogliotti_S2(Red, Nir2):
     a_low, c_low = 610.94, 0.2324
     a_high, c_high = 3030.32, 0.2115
 
-    t_low = spm_nechad(Red, a_low, c_low)
-    t_high = spm_nechad(Nir2, a_high, c_high)
+    t_low = spm_nechad(Red, a_low, 0, c_low)
+    t_high = spm_nechad(Nir2, a_high, 0, c_high)
     w = (Red - limit_inf) / (limit_sup - limit_inf)
     t_mixing = (1 - w) * t_low + w * t_high
 
@@ -148,8 +148,8 @@ def spm_dogliotti_S2(Red, Nir2):
     return t_low
 
 # Nechad et al. (2010)
-def spm_nechad(Red, a=610.94, c=0.2324):
-    spm = a * Red / (1 - (Red / c))
+def spm_nechad(Red, a=355.85, b=1.74, c=0.1728):
+    spm = a * (Red * np.pi) / (1 - ((Red * np.pi) / c)) + b
     return spm
 
 # Jiang et al. (2021)
@@ -313,7 +313,7 @@ def spm_s3(Red, Nir2, cutoff_value=0.027, cutoff_delta=0.007, low_params=None, h
     return spm
 
 # SPM hibrid
-def spm_severo(Red, Nir2):
+def spm_beni_mamore(Red, Nir2):
     if (Nir2 / Red) > 0.3:
         spm = 16.01 * 2.71828 ^ (4.99 * Nir2 / Red)
     else:
@@ -321,7 +321,7 @@ def spm_severo(Red, Nir2):
 
     return spm
 
-def vectorized_spm_sev(Red, Nir2):
+def vectorized_spm_beni_mamore(Red, Nir2):
     # Ensure the inputs are numpy arrays (if not already)
     Red = np.asarray(Red)
     Nir2 = np.asarray(Nir2)
