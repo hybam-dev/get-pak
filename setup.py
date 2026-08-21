@@ -2,7 +2,7 @@ import os
 from setuptools import setup, find_packages
 
 __package__ = 'getpak'
-__version__ = '0.1.4'
+__version__ = '0.1.5'
 
 short_description = 'Raster and vector manipulation toolbox for reproducible water quality research.'
 

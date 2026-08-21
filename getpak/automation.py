@@ -12,6 +12,7 @@ from datetime import datetime
 from getpak import inversion_functions as ifunc
 from getpak.input import Input
 from getpak.input import GRS as g
+from getpak.input import ACOLITE_S2
 from getpak.output import Raster as r
 from getpak.commons import Utils as u
 from getpak.methods import Methods
@@ -65,6 +66,18 @@ class Pipelines:
     @property
     def tile_id(self):
         return self.settings.get('processing', 's2_tile')['s2_tile']
+
+    @property
+    def ac_processor(self):
+        processor = self.settings.get('processing', {}).get('ac_processor', 'GRS')
+        processor = str(processor).strip().upper()
+        supported = ('GRS', 'ACOLITE')
+        if processor not in supported:
+            raise ValueError(
+                f"Unsupported ac_processor {processor!r}. Supported batch processors: "
+                f"{', '.join(supported)}."
+            )
+        return processor
     
     # @property
     # def grs_files(self):
@@ -73,7 +86,44 @@ class Pipelines:
     
     @property
     def grs_file_version(self):
-        return self.settings.get('processing', 'grs_version')['grs_version']
+        if self.ac_processor != 'GRS':
+            return None
+        try:
+            return self.settings['processing']['grs_version']
+        except KeyError as exc:
+            raise ValueError("grs_version is required when ac_processor=GRS.") from exc
+
+    @staticmethod
+    def _normalize_tile(tile):
+        return str(tile).strip().upper().removeprefix('T')
+
+    def discover_input_files(self):
+        """Discover validated input products for the selected processor and tile."""
+        tile = self._normalize_tile(self.tile_id)
+        if self.ac_processor == 'GRS':
+            search_root = os.path.join(self.input_folder, self.tile_id)
+            input_files = u.walktalk(search_root, unwanted_string='*_anc*')
+            metadata_reader = g.metadata
+            filename_rule = '*.nc excluding *_anc*'
+        else:
+            search_root = self.input_folder
+            filename_rule = '*_L2R.nc with ACOLITE/L2R metadata'
+            candidates = sorted(Path(search_root).rglob('*_L2R.nc'))
+            input_files = []
+            for candidate in candidates:
+                info = ACOLITE_S2.metadata(candidate, require_l2r=True)
+                if self._normalize_tile(info['tile']) == tile:
+                    input_files.append(candidate)
+            metadata_reader = lambda path: ACOLITE_S2.metadata(path, require_l2r=True)
+
+        records = [(path, metadata_reader(path)) for path in input_files]
+        records.sort(key=lambda item: (item[1]['pydate'], str(item[0])))
+        if not records:
+            raise ValueError(
+                f"No valid {self.ac_processor} inputs found under {search_root!r}; "
+                f"expected {filename_rule} for tile {tile}."
+            )
+        return records
 
     @property
     def l2b_functions(self):
@@ -123,39 +173,45 @@ class Pipelines:
         return self
 
     def get_matchups(self, do_return=False):
-        """ GRS L2B + WD + OWT """
+        """Match atmospheric-correction inputs to external WaterDetect masks."""
         
         u.set_gdal_driver_path() # For cluster use
         sep_trace = u.repeat_to_length('-', 22)
         print(sep_trace)
-        print('Running L2B algorithms with WD intersection...')
+        print(f'Running L2B algorithms for {self.ac_processor} with WD intersection...')
         print(f'Processing tile: {self.tile_id}')
-        
-        # Set input/output folders for the current tile
-        tile_input_folder = os.path.join(self.input_folder, self.tile_id)
-        print(f'Input GRS folder: {tile_input_folder}')
-        
-        grs_file_list = u.walktalk(tile_input_folder, unwanted_string='*_anc*')
-        
-        # Creating a vector of the dates of GRS images
-        grs_dates = []
-        meta = {}
-        for i in grs_file_list:
-            info = g.metadata(i)
-            date = info['year']+info['month']+info['day']
-            grs_dates.append(date)
-            meta[date] = info
+        print(f'Input {self.ac_processor} root: {self.input_folder}')
+
+        records = self.discover_input_files()
+        input_files = [record[0] for record in records]
+        input_dates = [record[1]['str_date'] for record in records]
 
         # Location of renamed WaterDetect masks
         wd_dates, wd_masks_list = m.get_waterdetect_masks(input_folder=self.wmask_folder)
 
         # match-ups
         matches, str_matches, dates = m.sch_date_matchups(
-            fst_dates=grs_dates,
+            fst_dates=input_dates,
             snd_dates=wd_dates,
-            fst_tile_list=grs_file_list,
-            snd_tile_list=wd_masks_list
+            fst_tile_list=input_files,
+            snd_tile_list=wd_masks_list,
+            tile_id=self.tile_id,
         )
+
+        if not matches:
+            raise ValueError(
+                f"No {self.ac_processor}/WaterDetect matchups found for tile "
+                f"{self._normalize_tile(self.tile_id)}."
+            )
+
+        meta = {}
+        occurrences = {}
+        for _, info in records:
+            date = info['str_date']
+            occurrences[date] = occurrences.get(date, 0) + 1
+            key = date if occurrences[date] == 1 else f"{date}_{occurrences[date]}"
+            if key in matches:
+                meta[key] = info
 
         self.matches = matches
         self.str_matches = str_matches
@@ -202,8 +258,14 @@ class Pipelines:
             print(sep_trace)
             print(f'Processing: {n+1}/{tot} - {key}')
             
-            results[key] = {'IMG': str_matches[key]['IMG'],
-                            'WM': str_matches[key]['WM']}
+            results[key] = {
+                'IMG': str_matches[key]['IMG'],
+                'WM': str_matches[key]['WM'],
+                'processor': self.ac_processor,
+                'source_path': str_matches[key]['IMG'],
+                'status': 'processing',
+                'error': None,
+            }
             
             results[key].update({'npix': 'empty'})
             results[key].update({'OWT': 'empty'})
@@ -222,16 +284,20 @@ class Pipelines:
                 results[key].update({'RedEdge3': 'empty'}) # 783
                 results[key].update({'Nir2': 'empty'})     # 865
 
+            rrs_source = None
             try:
                 grs_ver = self.grs_file_version
-                print(f'Loading GRS data using grs_version={grs_ver}...')
-                grs_t = i.get_input_nc(file=str_matches[key]['IMG'],
-                                       sensor='S2MSI',
-                                       AC_processor='GRS',
-                                       grs_version=grs_ver)
-                
+                version_message = f" using grs_version={grs_ver}" if grs_ver else ""
+                print(f'Loading {self.ac_processor} data{version_message}...')
+                rrs_source = i.get_input_nc(
+                    file=str_matches[key]['IMG'], sensor='S2MSI',
+                    AC_processor=self.ac_processor, grs_version=grs_ver,
+                )
+
                 print(f'Intersecting image with water mask...')
-                grs = m.intersect_watermask(rrs_dict=grs_t, water_mask_dir=str_matches[key]['WM'])
+                grs = m.intersect_watermask(rrs_dict=rrs_source, water_mask_dir=str_matches[key]['WM'])
+                if grs is None:
+                    raise ValueError("Water mask produced no valid overlapping water pixels.")
 
                 #### Before using the filters, creating a matrix to store the number of pixels
                 pixels = np.array([
@@ -265,8 +331,7 @@ class Pipelines:
                 class_px, angles = m.classify_owt_chla_px(rrs_dict=grs, sensor='S2MSI', B1=True)
                 
                 if class_px.sum()<=0:
-                    print('No valid pixels in this image, continuing to the next.')
-                    continue
+                    raise ValueError("No valid pixels remain after masking and quality filters.")
                 else:
                     
                     # classifying the OWT of each reservoir
@@ -380,15 +445,19 @@ class Pipelines:
                
                 stacked = None
                 grs.close()
-                grs_t.close()
+                rrs_source.close()
+                results[key]['status'] = 'success'
             
                 t_hour, t_min, t_sec,_ = u.tac()
                 print(f'Done processing: {n+1}/{tot} - {key} \nExecution time: {t_hour}h : {t_min}m : {t_sec}s')
                 
 
             except Exception as e:
-                print(e)
+                if rrs_source is not None:
+                    rrs_source.close()
                 print(f'Error processing {key}: {e}')
+                results[key]['status'] = 'error'
+                results[key]['error'] = str(e)
                 t_hour, t_min, t_sec,_ = u.tac()
                 print(f'Execution time: {t_hour}h : {t_min}m : {t_sec}s')
                 continue
@@ -472,11 +541,10 @@ class Pipelines:
         # Get all UIDs from npix in the output folder
         uids_list = [self.get_uid(f) for f in os.listdir(os.path.join(self.output_folder, self.tile_id, 'npix'))]
         l_size = len(uids_list)
-        if l_size > 1 : 
+        if l_size >= 1:
             sheet = { uid.split('.')[0] : self.match_file_uid(os.path.join(self.output_folder, self.tile_id), uid) for uid in uids_list }
         else:
-            print(f'Insuficient amount of {l_size} files to build a list, exiting..')
-            sys.exit(1)
+            raise ValueError('No processed scenes are available to build a report.')
         
         # # Clear the trailing dot at the end of each UID
         # uids_list = [uid.split('.')[0] for uid in uids_list]

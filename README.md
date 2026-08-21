@@ -8,6 +8,8 @@ GET-Pak is an open-source Python toolbox for reproducible inland-water quality r
 
 GET-Pak is designed for both interactive Jupyter workflows and automated batch processing (CLI), making it suitable for single-scene exploration, regional monitoring, and large image collections on local machines or HPC systems.
 
+GET-Pak provides automated CLI batch processing for GRS and ACOLITE L2R Sentinel-2 MSI products. A SeaDAS reader is also available for interactive workflows, while full SeaDAS batch integration remains under development.
+
 ## Workflow
 [![GET-Pak processing workflow](img/get-pak-workflow.png)](img/get-pak-workflow.png)
 *Overview of the GET-Pak processing workflow, from input reflectance products and masking to Level-2B water-quality maps, ROI statistics, and report generation.*
@@ -105,6 +107,36 @@ GET-Pak version: 0.1.4
 
 > [!IMPORTANT]
 > Review and adapt `settings.ini` before launching the workflow.
+
+### Atmospheric-correction inputs
+
+Set `ac_processor` under `[processing]` to `GRS` or `ACOLITE` (case-insensitive). If the option is absent, GET-Pak defaults to `GRS` for compatibility with existing configuration files. `grs_version` is required for GRS and ignored for ACOLITE.
+
+GET-Pak does not run ACOLITE. Generate or otherwise obtain Sentinel-2 MSI `*_L2R.nc` products externally, then point `inputs` to a directory containing them. ACOLITE discovery is recursive and validates the product metadata and configured tile. Both processors require an external WaterDetect `*_water_mask.tif` for the same acquisition date and tile; GET-Pak checks spatial overlap and aligns the mask grid when necessary. Ambiguous same-date/tile masks are rejected.
+
+Minimal ACOLITE configuration:
+
+```ini
+[client_folder]
+inputs = /path/to/ACOLITE_OUT
+output = /path/to/a/separate/getpak_acolite_output
+wmask_folder = /path/to/matching_water_masks
+
+[vector_list]
+roi_vectors = /path/to/roi.shp
+
+[processing]
+ac_processor = ACOLITE
+compute_l2b = True
+make_report = False
+report_rrs = True
+parallel = False
+s2_tile = 20LLQ
+s2_resolution = 20
+grs_version = v20
+```
+
+The `grs_version` entry is retained here only for easy switching and backward compatibility. Use different output directories when comparing GRS and ACOLITE so same-date products do not overwrite one another.
 
 After installation, run the complete settings-driven workflow:
 ```

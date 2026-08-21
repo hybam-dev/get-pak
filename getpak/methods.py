@@ -1165,7 +1165,7 @@ class Methods:
 
     # Water mask intersecting methods
     @staticmethod
-    def sch_date_matchups(fst_dates, snd_dates, fst_tile_list, snd_tile_list):
+    def sch_date_matchups(fst_dates, snd_dates, fst_tile_list, snd_tile_list, tile_id=None):
         """
         Function to search for the match-up dates of two sets of images given two sets of dates.
         This function also writes the directories of the matchups for each date
@@ -1186,9 +1186,20 @@ class Methods:
         matches = {}
         str_matches = {}  # STR dict to avoid -> TypeError: Object of type PosixPath is not JSON serializable
         dates = []
+        normalized_tile = str(tile_id or '').upper().removeprefix('T')
         for n, date in enumerate(fst_dates):
             arr_index = np.where(np.array(snd_dates) == date)[0]
-            if len(arr_index) > 0:
+            if normalized_tile:
+                arr_index = np.array([
+                    idx for idx in arr_index
+                    if Methods._tile_from_name(snd_tile_list[idx]) == normalized_tile
+                ], dtype=int)
+            if len(arr_index) > 1:
+                candidates = ', '.join(str(snd_tile_list[idx]) for idx in arr_index)
+                raise ValueError(
+                    f"Ambiguous WaterDetect masks for date {date}, tile {normalized_tile}: {candidates}"
+                )
+            if len(arr_index) == 1:
                 # first check if the date is repeating
                 if date not in matches:
                     matches[date] = {'IMG': fst_tile_list[n], 'WM': snd_tile_list[arr_index[0]]}
@@ -1205,6 +1216,13 @@ class Methods:
         print(f'Found {len(dates)} match-ups\n')
         
         return matches, str_matches, dates
+
+    @staticmethod
+    def _tile_from_name(path):
+        """Extract and normalize an MGRS tile from a Sentinel-2-style filename."""
+        import re
+        match = re.search(r"(?:^|_)T(\d{2}[A-Z]{3})(?:_|\.|$)", os.path.basename(os.fspath(path)).upper())
+        return match.group(1) if match else None
 
     @staticmethod
     def get_waterdetect_masks(input_folder, output_folder=None):
@@ -1249,9 +1267,9 @@ class Methods:
             print(f'Copied {len(wd_masks_list)} water masks to: {output_folder}\n')
             # self.log.info(f'Copied {len(wd_masks_list)} water masks to: {output_folder}\n')
         else:
-            for file in os.listdir(input_folder):
-                if file.endswith('.tif') and '_water_mask' in file:
-                    f = Path(os.path.join(input_folder, file))
+            for f in sorted(Path(input_folder).rglob('*_water_mask.tif')):
+                if f.is_file():
+                    file = f.name
                     # appending the date and path
                     nome = file.split(
                         '_')  # check because for MAJA the dates are in position 2, while for other products it is 3
@@ -1339,7 +1357,9 @@ class Methods:
         rrs_dict = rrs_dict.rio.write_crs(rrs_dict.attrs['proj'], inplace=False)
 
         # Check bounding box overlap before reprojecting
-        wd_bounds = box(*wd_mask.rio.bounds())
+        if wd_mask.rio.crs is None or rrs_dict.rio.crs is None:
+            raise ValueError("Rrs image and water mask must both define a CRS.")
+        wd_bounds = box(*wd_mask.rio.transform_bounds(rrs_dict.rio.crs))
         rrs_bounds = box(*rrs_dict.rio.bounds())
 
         if not wd_bounds.intersects(rrs_bounds):
@@ -1347,6 +1367,14 @@ class Methods:
             return None
 
         # Reproject water mask to match Rrs
+        same_grid = (
+            wd_mask.rio.crs == rrs_dict.rio.crs
+            and wd_mask.rio.transform() == rrs_dict.rio.transform()
+            and wd_mask.rio.width == rrs_dict.rio.width
+            and wd_mask.rio.height == rrs_dict.rio.height
+        )
+        if not same_grid:
+            print("Water mask grid differs from Rrs grid; reprojecting to match.")
         wd_mask_matched = wd_mask.rio.reproject_match(rrs_dict)
 
         # Now mask Rrs using the reprojected water mask
