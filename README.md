@@ -97,7 +97,7 @@ If all went well, you should see something like:
              \   `\  \                                            88
               `-._/._/
                         
-GET-Pak version: 0.1.4
+GET-Pak version: 0.1.5
 ```
 
 > [!TIP]
