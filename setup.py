@@ -34,10 +34,25 @@ setup(
         'console_scripts': ['getpak=main:main'],
     },
     install_requires=[
-        'scikit_learn',
-        'matplotlib',
+        'affine',
+        'dask',
+        'fiona',
+        'geopandas',
+        'h5py',
+        'h5netcdf',
+        'netCDF4',
         'numpy',
+        'openpyxl',
         'pandas',
-        'rasterstats'
-        ]
-    )
+        'Pillow',
+        'rasterio',
+        'rasterstats==0.19.0',
+        'rioxarray',
+        'scikit-learn',
+        'shapely',
+        'xarray==2023.12.0',
+    ],
+    extras_require={
+        'test': ['pytest>=7,<9'],
+    },
+)

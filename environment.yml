@@ -1,0 +1,31 @@
+name: getpak-review
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10.20
+  - gdal=3.11.4
+  - libgdal-netcdf
+  - numpy=2.2.5
+  - pip
+  - pip:
+      - affine==2.4.0
+      - dask==2026.3.0
+      - fiona==1.10.1
+      - geopandas==1.1.3
+      - h5py==3.14.0
+      - h5netcdf==1.8.1
+      - netCDF4==1.7.4
+      - openpyxl==3.1.5
+      - pandas==2.3.3
+      - Pillow==11.3.0
+      - pytest==7.1.2
+      - rasterio==1.4.4
+      - rasterstats==0.19.0
+      - rioxarray==0.17.0
+      - scikit-learn==1.7.2
+      - shapely==2.1.2
+      - xarray==2023.12.0
+      - -e .
+# GDAL is installed by Conda before the pip packages because GET-Pak imports
+# osgeo directly. This file is the tested Linux/Python 3.10 environment.
+# Re-lock it after any dependency change rather than widening pins silently.
