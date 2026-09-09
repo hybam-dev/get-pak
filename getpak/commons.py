@@ -105,11 +105,45 @@ class Utils:
         return str_GDAL_DRIVER_PATH
 
     @staticmethod
-    def to_uint16_scaled(arr, scale=10000, nodata=65535):
-        arr = np.asarray(arr, dtype=float) * scale
-        arr = np.where(np.isfinite(arr), arr, nodata)
-        arr = np.clip(arr, 0, nodata)
-        return arr.astype(np.uint16)
+    def to_uint16_scaled(arr, scale=10000, nodata=65535, unit='1',
+                         product='unknown', return_metadata=False):
+        """Encode non-negative physical values as scaled ``uint16`` values.
+
+        ``nodata`` is reserved exclusively for non-finite and negative inputs.
+        Finite overflow is clipped to the largest non-nodata code and counted in
+        the returned metadata. A stored zero therefore remains a valid physical
+        zero. Physical values are recovered as ``stored * decode_multiplier``.
+        """
+        if not isinstance(scale, (int, float)) or scale <= 0:
+            raise ValueError('scale must be a positive number')
+        if int(nodata) != 65535:
+            raise ValueError('UInt16 scaled products reserve nodata=65535 exclusively.')
+
+        values = np.asarray(arr, dtype=float)
+        finite = np.isfinite(values)
+        negative = finite & (values < 0)
+        valid = finite & ~negative
+        rounded = np.rint(np.where(valid, values * scale, 0.0))
+        max_code = 65535 if nodata != 65535 else 65534
+        overflow = valid & (rounded > max_code)
+
+        encoded = np.full(values.shape, nodata, dtype=np.uint16)
+        encoded[valid] = np.clip(rounded[valid], 0, max_code).astype(np.uint16)
+        metadata = {
+            'product': str(product),
+            'physical_unit': str(unit),
+            'scale_factor': float(scale),
+            'decode_multiplier': float(1.0 / scale),
+            'add_offset': 0.0,
+            'nodata': int(nodata),
+            'invalid_policy': 'non-finite and negative values map to nodata',
+            'overflow_policy': f'finite overflow clips to {max_code}',
+            'invalid_count': int((~finite).sum()),
+            'negative_count': int(negative.sum()),
+            'overflow_count': int(overflow.sum()),
+            'valid_zero_count': int((valid & (values == 0)).sum()),
+        }
+        return (encoded, metadata) if return_metadata else encoded
 
     @staticmethod
     def sort_l2b_by_date(input_directory_path):

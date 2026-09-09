@@ -85,7 +85,8 @@ class Raster:
         pass
 
     @staticmethod
-    def array2tiff(ndarray_data, str_output_file, transform, projection, no_data=-1, compression='COMPRESS=PACKBITS'):
+    def array2tiff(ndarray_data, str_output_file, transform, projection, no_data=-1,
+                   compression='COMPRESS=PACKBITS', metadata=None):
         """
         Given an input ndarray and the desired projection parameters, create a raster.tif using GDT_Float32.
 
@@ -112,6 +113,16 @@ class Raster:
                            nodata=no_data,
                            options=[compression]) as file:
             file.write(ndarray_data, 1)
+            if metadata:
+                tags = {key.upper(): str(value) for key, value in metadata.items()}
+                file.update_tags(**tags)
+                scale = metadata.get('scale_factor')
+                if scale:
+                    file.scales = (1.0 / float(scale),)
+                    file.offsets = (float(metadata.get('add_offset', 0.0)),)
+                unit = metadata.get('physical_unit')
+                if unit:
+                    file.units = (str(unit),)
         pass
 
     @staticmethod

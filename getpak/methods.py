@@ -6,6 +6,7 @@ import pandas as pd
 import xarray as xr
 import rioxarray as rxr
 
+from rasterio.enums import Resampling
 from shapely.geometry import box
 from rasterstats import zonal_stats
 from getpak.input import GRS
@@ -100,15 +101,55 @@ class Methods:
         #                             band=1)
         # # Original output comes inside a list containing only the output dict:
         # return roi_stats[0]
+        if keep_spatial:
+            raise NotImplementedError(
+                'keep_spatial=True is not supported by the batch ROI path; '
+                'use the flat statistics result.'
+            )
+        requested = set(str(statistics).split())
+        internal_statistics = ' '.join(sorted(requested | {'count'}))
         roi_stats = zonal_stats(shp_poly,
                                 tif_file,
-                                stats=statistics,
+                                stats=internal_statistics,
                                 raster_out=True,
                                 all_touched=True,
                                 geojson_out=keep_spatial,
                                 band=1)
-        # Original output comes inside a list containing only the output dict:
-        return roi_stats[0]
+        if not roi_stats:
+            return {
+                'count': 0, 'min': None, 'max': None, 'mean': None,
+                'median': None, 'std': None, 'roi_status': 'empty_roi',
+                'roi_features': 0, 'roi_features_with_data': 0,
+            }
+
+        populated = [item for item in roi_stats if int(item.get('count') or 0) > 0]
+        if not populated:
+            base = dict(roi_stats[0])
+            base.update({
+                'count': 0, 'min': None, 'max': None, 'mean': None,
+                'median': None, 'std': None, 'roi_status': 'empty_overlap',
+                'roi_features': len(roi_stats), 'roi_features_with_data': 0,
+            })
+            return base
+
+        count = sum(int(item.get('count') or 0) for item in populated)
+        weighted_mean = sum(
+            float(item['mean']) * int(item.get('count') or 0)
+            for item in populated if item.get('mean') is not None
+        ) / count
+        return {
+            'count': count,
+            'min': min(item['min'] for item in populated if item.get('min') is not None),
+            'max': max(item['max'] for item in populated if item.get('max') is not None),
+            'mean': weighted_mean,
+            # Median/std cannot be pooled exactly from per-feature summaries.
+            'median': populated[0].get('median') if len(populated) == 1 else None,
+            'std': populated[0].get('std') if len(populated) == 1 else None,
+            'roi_status': ('success' if len(populated) == len(roi_stats)
+                           else 'partial_overlap'),
+            'roi_features': len(roi_stats),
+            'roi_features_with_data': len(populated),
+        }
     
     @staticmethod
     def extract_px(rasterio_rast, shapefile, rrs_dict, bands):
@@ -716,7 +757,11 @@ class Methods:
                 chla[out] = np.nan
 
         elif alg == 'gilerson3':
-            chla = ifunc.chl_gilerson3(Red=rrs_dict['Red'].values, RedEdge2=rrs_dict['RedEdge2'].values)
+            chla = ifunc.chl_gilerson3(
+                Red=rrs_dict['Red'].values,
+                RedEdge1=rrs_dict['RedEdge1'].values,
+                RedEdge2=rrs_dict['RedEdge2'].values,
+            )
             if limits:
                 lims = [10, 2000]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
@@ -1051,11 +1096,9 @@ class Methods:
         """
         Force water leaving reflectance to 0.0 ~ 1.0 range and return the cleaned band itself.
         """
-        rrs = rrs_dict[bname].values
-        lims = [0.0, 1.0]
-        out = np.where((rrs < lims[0]) | (rrs > lims[1]))
-        rrs[np.where(np.isnan(rrs))] = 0
-        rrs[out] = 0
+        rrs = np.asarray(rrs_dict[bname].values, dtype=float).copy()
+        # Keep invalid values invalid. Zero is physical; NaN carries exclusions.
+        rrs[(rrs < 0.0) | (rrs > 1.0)] = np.nan
         return rrs
 
 
@@ -1341,7 +1384,8 @@ class Methods:
     #     return img
     
     @staticmethod
-    def intersect_watermask(rrs_dict, water_mask_dir):
+    def intersect_watermask(rrs_dict, water_mask_dir, require_full_coverage=False,
+                            return_status=False):
         """
         Test overlap before reprojecting/intersecting water mask to Rrs data using rioxarray.
 
@@ -1351,7 +1395,9 @@ class Methods:
             Masked Rrs data if overlap exists, else None
         """
         # Load WaterDetect mask
-        wd_mask = rxr.open_rasterio(water_mask_dir, masked=True).squeeze()
+        wd_mask = rxr.open_rasterio(water_mask_dir, masked=True)
+        if 'band' in wd_mask.dims and wd_mask.sizes['band'] == 1:
+            wd_mask = wd_mask.squeeze('band', drop=True)
 
         # Ensure Rrs has CRS and spatial info
         rrs_dict = rrs_dict.rio.write_crs(rrs_dict.attrs['proj'], inplace=False)
@@ -1364,7 +1410,16 @@ class Methods:
 
         if not wd_bounds.intersects(rrs_bounds):
             print("No spatial overlap between Rrs image and water mask.")
-            return None
+            return (None, 'no_overlap') if return_status else None
+        if require_full_coverage and not wd_bounds.covers(rrs_bounds):
+            print("Static water mask does not fully cover the Rrs image.")
+            return (None, 'static_mask_incompatible') if return_status else None
+
+        mask_values = np.asarray(wd_mask.values)
+        finite_values = np.unique(mask_values[np.isfinite(mask_values)])
+        if not set(finite_values.tolist()).issubset({0, 1}):
+            print("Water mask contains classes other than 0 and 1.")
+            return (None, 'invalid_mask_classes') if return_status else None
 
         # Reproject water mask to match Rrs
         same_grid = (
@@ -1375,7 +1430,9 @@ class Methods:
         )
         if not same_grid:
             print("Water mask grid differs from Rrs grid; reprojecting to match.")
-        wd_mask_matched = wd_mask.rio.reproject_match(rrs_dict)
+        wd_mask_matched = wd_mask.rio.reproject_match(
+            rrs_dict, resampling=Resampling.nearest
+        )
 
         # Now mask Rrs using the reprojected water mask
         img = rrs_dict.where(wd_mask_matched == 1).persist()
@@ -1384,7 +1441,7 @@ class Methods:
         # if img['Red'].notnull().sum().compute().item() == 0:
         if img['Red'].notnull().any().compute() == False:
             print("Water mask does not cover any valid Rrs pixels.")
-            return None
+            return (None, 'empty_mask') if return_status else None
         
         print("Done.")
-        return img
+        return (img, 'matched') if return_status else img
