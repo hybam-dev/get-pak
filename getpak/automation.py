@@ -33,6 +33,7 @@ class Pipelines:
         self.settings = u.resolve_encoding_settings(u.read_config(config_path=config_path))
         self.encoding_settings = self.settings
         self._skip_output_targets = set()
+        self.grid_by_uid = {}
         self.settings['_config_dir'] = str(Path(config_path).resolve().parent) if config_path else str(Path(__file__).resolve().parent.parent)
         self.INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
         self._run_started_perf = time.perf_counter()
@@ -379,6 +380,11 @@ class Pipelines:
             'record_id': entry.get('record_id', scene_uid),
             'source_product_name': entry.get('source_product_name', info.get('basename', '')),
         }
+        grid_validation = getattr(self, 'grid_by_uid', {}).get(scene_uid)
+        if grid_validation:
+            metadata['grid_validation'] = json.dumps(
+                grid_validation, sort_keys=True, separators=(',', ':')
+            )
         return metadata
 
     def _output_filename(self, folder, prefix, scene_uid, suffix):
@@ -761,6 +767,15 @@ class Pipelines:
                 scene_timing['scene_dimensions'] = [
                     int(value) for value in rrs_source['Red'].shape
                 ]
+                grid_validation = rrs_source.attrs.get('grid_validation')
+                if self.ac_processor == 'GRS':
+                    if not grid_validation:
+                        raise ValueError(
+                            "GRS reader did not provide validated grid metadata."
+                        )
+                    self.grid_by_uid[key] = grid_validation
+                    ledger_entry['grid_validation'] = grid_validation
+                    results[key]['grid_validation'] = grid_validation
 
                 mask_start = time.perf_counter()
                 print(f'Intersecting image with water mask...')

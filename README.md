@@ -68,6 +68,12 @@ static_mask_path = /absolute/path/to/reference_water_mask.tif
 A static mask must overlap every scene, cover it as required, and contain compatible binary classes. Grid differences are aligned with nearest-neighbour resampling. No overlap, partial coverage, invalid classes, and all-zero masks are reported per scene.
 
 Set `roi_vectors` to one or more shapefile paths when ROI statistics or an Excel report is needed.
+## GRS grid validation
+
+For GRS products, GET-Pak validates finite one-dimensional projected x/y coordinates, dimensions, metre units, monotonic direction, and uniform spacing before mask alignment or export. Coordinates are treated as pixel centres, so the selected GeoTIFF transform uses the signed centre spacing and half-pixel edge offset. A stale source GeoTransform is replaced only when this regular projected-grid contract is unambiguous; ambiguous or irregular grids fail with a scene-level diagnostic.
+
+The scene ledger and output metadata record the original and selected transforms and the validation reason. Outputs created before a detected grid/georeferencing repair may have incorrect spatial support and should be regenerated through the full L2B pipeline with the corrected reader; do not repair them by changing headers or reports alone.
+
 
 ## Outputs and filenames
 

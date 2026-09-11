@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import json
 import rasterio
 import rasterio.mask
 import numpy as np
@@ -187,6 +188,153 @@ class GRS:
         return metadata
 
     @staticmethod
+    def _validated_grid(grs, proj, original_transform, transform_source):
+        """Validate GRS coordinates and return a synchronized raster grid.
+
+        GRS projected x/y coordinates are CF coordinate values for pixel
+        centres. The output transform is derived from the first centre
+        and signed centre-to-centre spacing, independently of a stale
+        NetCDF/GDAL GeoTransform attribute. Only regular 1-D projected grids
+        are supported; ambiguous data is rejected before masking or writing.
+        """
+        tolerance = 1e-6
+        if proj is None or not proj.is_projected:
+            raise ValueError("GRS input must define a usable projected CRS.")
+        linear_units = str(getattr(proj, "linear_units", "") or "").lower()
+        if linear_units not in {"m", "metre", "meter", "metres", "meters"}:
+            raise ValueError(
+                f"GRS projected CRS must use metre coordinates; found {linear_units!r}."
+            )
+
+        coordinates = {}
+        steps = {}
+        for axis in ("x", "y"):
+            if axis not in grs.coords:
+                raise ValueError(f"GRS grid must contain a one-dimensional {axis!r} coordinate.")
+            values = np.asarray(grs.coords[axis].values)
+            if values.ndim != 1 or values.size < 2:
+                raise ValueError(
+                    f"GRS {axis} coordinate must be finite, one-dimensional, and have at least two values."
+                )
+            if not np.issubdtype(values.dtype, np.number) or not np.all(np.isfinite(values)):
+                raise ValueError(f"GRS {axis} coordinate must contain only finite numeric values.")
+            if grs.sizes.get(axis) != values.size:
+                raise ValueError(
+                    f"GRS {axis} coordinate length {values.size} does not match the {axis!r} dimension."
+                )
+            units = str(grs.coords[axis].attrs.get("units", "") or "").strip().lower()
+            if units and units not in {"m", "metre", "meter", "metres", "meters"}:
+                raise ValueError(
+                    f"GRS {axis} coordinate units must be metres; found {units!r}."
+                )
+            differences = np.diff(values.astype(float))
+            step = float(np.median(differences))
+            step_tolerance = tolerance * max(1.0, abs(step))
+            if step == 0 or not np.all(np.isfinite(differences)):
+                raise ValueError(f"GRS {axis} coordinate spacing must be finite and non-zero.")
+            if not (np.all(differences > 0) or np.all(differences < 0)):
+                raise ValueError(f"GRS {axis} coordinate must be strictly monotonic.")
+            if not np.allclose(differences, step, rtol=0.0, atol=step_tolerance):
+                raise ValueError(
+                    f"GRS {axis} coordinate spacing is irregular; cannot establish a supported regular grid."
+                )
+            coordinates[axis] = values.astype(float)
+            steps[axis] = step
+
+        for name, data in grs.data_vars.items():
+            if data.dims != ("y", "x"):
+                raise ValueError(
+                    f"GRS radiometry variable {name!r} must use dimensions ('y', 'x'); found {data.dims}."
+                )
+            if data.sizes["y"] != coordinates["y"].size or data.sizes["x"] != coordinates["x"].size:
+                raise ValueError(
+                    f"GRS radiometry variable {name!r} dimensions do not match its coordinates."
+                )
+
+        # Preserve row/column order and signed coordinate direction in the
+        # affine. Never flip only the transform or one related array.
+        transform = Affine(
+            steps["x"], 0.0, coordinates["x"][0] - steps["x"] / 2.0,
+            0.0, steps["y"], coordinates["y"][0] - steps["y"] / 2.0,
+        )
+        expected_bounds = (
+            min(transform.c, transform.c + transform.a * coordinates["x"].size),
+            min(transform.f, transform.f + transform.e * coordinates["y"].size),
+            max(transform.c, transform.c + transform.a * coordinates["x"].size),
+            max(transform.f, transform.f + transform.e * coordinates["y"].size),
+        )
+        actual_centres = np.asarray([
+            transform.c + transform.a * 0.5,
+            transform.f + transform.e * 0.5,
+            transform.c + transform.a * (coordinates["x"].size - 0.5),
+            transform.f + transform.e * (coordinates["y"].size - 0.5),
+        ])
+        expected_centres = np.asarray([
+            coordinates["x"][0], coordinates["y"][0],
+            coordinates["x"][-1], coordinates["y"][-1],
+        ])
+        if not np.allclose(actual_centres, expected_centres, rtol=0.0, atol=tolerance):
+            raise ValueError("GRS coordinate-derived transform does not reproduce coordinate centres.")
+
+        original = None
+        if original_transform is not None:
+            try:
+                if isinstance(original_transform, Affine):
+                    original = tuple(
+                        float(getattr(original_transform, name))
+                        for name in ('a', 'b', 'c', 'd', 'e', 'f')
+                    )
+                else:
+                    original = tuple(float(value) for value in original_transform)
+                    if len(original) == 9:
+                        original = original[:6]
+            except (TypeError, ValueError):
+                original = None
+            if original is not None and (len(original) != 6 or not np.all(np.isfinite(original))):
+                original = None
+        selected = tuple(
+            float(getattr(transform, name))
+            for name in ('a', 'b', 'c', 'd', 'e', 'f')
+        )
+        agrees = original is not None and np.allclose(
+            original, selected, rtol=0.0,
+            atol=tolerance * max(1.0, max(abs(v) for v in selected)),
+        )
+        reason = (
+            "validated coordinate-derived transform agrees with source transform"
+            if agrees else
+            "replaced stale or unavailable source transform with validated coordinate-derived transform"
+        )
+        grid_validation = {
+            "contract": "regular_projected_grs_grid_v1",
+            "coordinate_convention": "CF projected x/y values treated as pixel centers",
+            "coordinate_units": "metres",
+            "spacing_tolerance": tolerance,
+            "dimensions": {"y": int(coordinates["y"].size), "x": int(coordinates["x"].size)},
+            "spacing": {"x": steps["x"], "y": steps["y"]},
+            "coordinate_direction": {
+                "x": "increasing" if steps["x"] > 0 else "decreasing",
+                "y": "increasing" if steps["y"] > 0 else "decreasing",
+            },
+            "transform_source": transform_source,
+            "original_transform": original,
+            "selected_transform": selected,
+            "bounds": tuple(float(value) for value in expected_bounds),
+            "reason": reason,
+        }
+
+        # Synchronize rioxarray's grid-mapping/transform state with the
+        # transform consumed by reproject_match and every downstream writer.
+        grs = grs.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
+        grs = grs.rio.write_crs(proj, inplace=False)
+        grs = grs.rio.write_transform(transform, inplace=False)
+        grs.attrs["proj"] = proj
+        grs.attrs["trans"] = transform
+        grs.attrs["grid_validation"] = grid_validation
+        grs.attrs["grid_validation_json"] = json.dumps(grid_validation, sort_keys=True)
+        return grs, transform, grid_validation
+
+    @staticmethod
     def get_grs_dict(grs_nc_file, grs_version='v20'):
         """
         Open GRS netCDF files using xarray and dask, and return
@@ -217,8 +365,7 @@ class GRS:
                 # Drop the variables you don't want
                 variables_to_drop = [var for var in ds.variables if var not in variables_to_keep]
                 grs = ds.drop_vars(variables_to_drop)
-                grs.attrs["proj"] = proj
-                grs.attrs["trans"] = trans
+                transform_source = "rioxarray dataset transform"
         elif grs_version == 'v20':
             # first getting transform using gdal
             ds = gdal.Open(f'NETCDF:{grs_nc_file}:Rrs')
@@ -230,8 +377,7 @@ class GRS:
             proj = rasterio.crs.CRS.from_wkt(ds['spatial_ref'].attrs.get('crs_wkt'))
             subset_dict = {band: ds['Rrs'].sel(wl=wave).drop_vars(['wl', 'time']) for band, wave in bands.items()}
             grs = xr.Dataset(subset_dict)
-            grs.attrs["proj"] = proj
-            grs.attrs["trans"] = trans
+            transform_source = "GDAL Rrs subdataset GeoTransform"
         elif grs_version == 'v21':
             ds = xr.open_dataset(grs_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf")
             trans = ds.rio.transform()
@@ -239,13 +385,18 @@ class GRS:
             subset_dict = {band: ds['Rrs'].sel(wl=wave).drop_vars(['wl', 'time', 'band', 'central_wavelength']) for
                            band, wave in bands.items()}
             grs = xr.Dataset(subset_dict)
-            grs.attrs["proj"] = proj
-            grs.attrs["trans"] = trans
+            transform_source = "rioxarray dataset transform"
         else:
             # self.log.error(f'GRS version {grs_version} not supported.')
             grs = None
             sys.exit(1)
 
+        grs, trans, _ = GRS._validated_grid(
+            grs=grs,
+            proj=proj,
+            original_transform=trans,
+            transform_source=transform_source,
+        )
         ds.close()
         # grs = client.persist(grs)
         return grs, meta, proj, trans
