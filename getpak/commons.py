@@ -5,6 +5,7 @@ import json
 import logging
 import zipfile
 import subprocess
+import math
 import numpy as np
 import fnmatch
 
@@ -25,6 +26,27 @@ s2projgrid = load_s2projgrid()
 
 
 class Utils:
+
+    OUTPUT_ENCODING_DEFAULTS = {
+        'encoding_version': 'GETPAK-ENC-2',
+        'rrs_multiplier': 10000.0,
+        'chla_multiplier': 100.0,
+        'turbidity_multiplier': 10.0,
+        'hyspm_multiplier': 10.0,
+        'continuous_dtype': 'uint16',
+        'continuous_nodata': 65535,
+        'categorical_dtype': 'uint8',
+        'categorical_nodata': 255,
+    }
+    PRODUCT_FAMILY_KEYS = {
+        'aerosol': 'rrs_multiplier', 'blue': 'rrs_multiplier',
+        'green': 'rrs_multiplier', 'red': 'rrs_multiplier',
+        'rededge1': 'rrs_multiplier', 'rededge2': 'rrs_multiplier',
+        'rededge3': 'rrs_multiplier', 'nir2': 'rrs_multiplier',
+        'rrs': 'rrs_multiplier', 'chla': 'chla_multiplier',
+        'chlorophylla': 'chla_multiplier', 'turb': 'turbidity_multiplier',
+        'turbidity': 'turbidity_multiplier', 'hyspm': 'hyspm_multiplier',
+    }
 
     def __init__(self):
         pass
@@ -80,7 +102,146 @@ class Utils:
         
         vector_list = config.getlist('vector_list', 'roi_vectors')
         config_dict['roi_vectors'] = vector_list
-        return config_dict
+        settings = Utils.resolve_encoding_settings(config_dict)
+        output = settings['output_encoding']
+        print('Effective output encoding: '
+              f"{output['encoding_version']} ({output['encoding_profile']}); "
+              'continuous uint16/65535, categorical uint8/255.')
+        for item in Utils.encoding_summary(settings):
+            print(
+                f"  {item['product']}: multiplier={item['multiplier']:g}, "
+                f"resolution={item['resolution']:g} {item['unit']}, "
+                f"maximum={item['maximum']:g} {item['unit']}"
+            )
+        return settings
+
+    @staticmethod
+    def _parse_positive_multiplier(section, key, value):
+        if value is None or str(value).strip() == '':
+            raise ValueError(f'[{section}] {key} must be a finite positive number.')
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f'[{section}] {key} must be a finite positive number; got {value!r}.'
+            ) from exc
+        if not math.isfinite(parsed) or parsed <= 0:
+            raise ValueError(
+                f'[{section}] {key} must be a finite positive number; got {value!r}.'
+            )
+        return parsed
+
+    @staticmethod
+    def _parse_exact_integer(section, key, value, expected):
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f'[{section}] {key} must be {expected}; got {value!r}.'
+            ) from exc
+        if parsed != expected:
+            raise ValueError(
+                f'[{section}] {key} must be {expected}; got {value!r}.'
+            )
+        return parsed
+
+    @staticmethod
+    def resolve_encoding_settings(config):
+        # Validate encoding settings and add accepted defaults when absent.
+        if 'legacy_decoding' in config:
+            raise ValueError(
+                '[legacy_decoding] is retired; configure all decoding fallbacks under [output_encoding].'
+            )
+        output_present = 'output_encoding' in config
+        output_raw = dict(config.get('output_encoding', {}))
+
+        output = dict(Utils.OUTPUT_ENCODING_DEFAULTS)
+        if output_present:
+            output.update(output_raw)
+        output['encoding_version'] = str(output['encoding_version']).strip()
+        if output['encoding_version'] != 'GETPAK-ENC-2':
+            raise ValueError(
+                '[output_encoding] encoding_version must be GETPAK-ENC-2; '
+                f'got {output["encoding_version"]!r}.'
+            )
+        for key in ('rrs_multiplier', 'chla_multiplier',
+                    'turbidity_multiplier', 'hyspm_multiplier'):
+            output[key] = Utils._parse_positive_multiplier('output_encoding', key, output[key])
+        output['continuous_dtype'] = str(output['continuous_dtype']).strip().lower()
+        output['categorical_dtype'] = str(output['categorical_dtype']).strip().lower()
+        if output['continuous_dtype'] != 'uint16':
+            raise ValueError(
+                '[output_encoding] continuous_dtype must be uint16; '
+                f'got {output["continuous_dtype"]!r}.'
+            )
+        if output['categorical_dtype'] != 'uint8':
+            raise ValueError(
+                '[output_encoding] categorical_dtype must be uint8; '
+                f'got {output["categorical_dtype"]!r}.'
+            )
+        output['continuous_nodata'] = Utils._parse_exact_integer(
+            'output_encoding', 'continuous_nodata', output['continuous_nodata'], 65535
+        )
+        output['categorical_nodata'] = Utils._parse_exact_integer(
+            'output_encoding', 'categorical_nodata', output['categorical_nodata'], 255
+        )
+
+        standard = Utils.OUTPUT_ENCODING_DEFAULTS
+        output['encoding_profile'] = (
+            'standard' if all(output[key] == float(standard[key]) for key in (
+                'rrs_multiplier', 'chla_multiplier',
+                'turbidity_multiplier', 'hyspm_multiplier')) else 'custom'
+        )
+        output['resolution'] = {
+            key: 1.0 / output[key]
+            for key in ('rrs_multiplier', 'chla_multiplier',
+                        'turbidity_multiplier', 'hyspm_multiplier')
+        }
+        output['maximum_physical_value'] = {
+            key: 65534.0 / output[key]
+            for key in ('rrs_multiplier', 'chla_multiplier',
+                        'turbidity_multiplier', 'hyspm_multiplier')
+        }
+        config['output_encoding'] = output
+        return config
+
+    @staticmethod
+    def product_multiplier_key(product):
+        normalized = ''.join(ch for ch in str(product).lower() if ch.isalnum())
+        try:
+            return Utils.PRODUCT_FAMILY_KEYS[normalized]
+        except KeyError as exc:
+            raise ValueError(f'Unsupported continuous product family: {product!r}.') from exc
+
+    @staticmethod
+    def output_multiplier(config, product):
+        settings = Utils.resolve_encoding_settings(config)
+        return settings['output_encoding'][Utils.product_multiplier_key(product)]
+
+
+
+    @staticmethod
+
+    def encoding_summary(config):
+        """Return the concise user-facing effective encoding summary."""
+        settings = Utils.resolve_encoding_settings(config)
+        output = settings["output_encoding"]
+        units = {
+            "rrs_multiplier": "sr-1", "chla_multiplier": "mg m-3",
+            "turbidity_multiplier": "NTU", "hyspm_multiplier": "mg L-1",
+        }
+        return [
+            {
+                "product": product, "multiplier": output[key], "unit": units[key],
+                "resolution": output["resolution"][key],
+                "maximum": output["maximum_physical_value"][key],
+                "dtype": output["continuous_dtype"], "nodata": output["continuous_nodata"],
+            }
+            for product, key in (
+                ("Rrs bands", "rrs_multiplier"), ("Chl-a", "chla_multiplier"),
+                ("Turbidity", "turbidity_multiplier"), ("HySPM", "hyspm_multiplier"),
+            )
+        ]
 
     @staticmethod
     def parse_config_option(section, key):
@@ -107,15 +268,13 @@ class Utils:
     @staticmethod
     def to_uint16_scaled(arr, scale=10000, nodata=65535, unit='1',
                          product='unknown', return_metadata=False):
-        """Encode non-negative physical values as scaled ``uint16`` values.
-
-        ``nodata`` is reserved exclusively for non-finite and negative inputs.
-        Finite overflow is clipped to the largest non-nodata code and counted in
-        the returned metadata. A stored zero therefore remains a valid physical
-        zero. Physical values are recovered as ``stored * decode_multiplier``.
-        """
-        if not isinstance(scale, (int, float)) or scale <= 0:
-            raise ValueError('scale must be a positive number')
+        """Encode a continuous product using the GETPAK-ENC-2 uint16 contract."""
+        try:
+            scale = float(scale)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('scale must be a finite positive number') from exc
+        if not math.isfinite(scale) or scale <= 0:
+            raise ValueError('scale must be a finite positive number')
         if int(nodata) != 65535:
             raise ValueError('UInt16 scaled products reserve nodata=65535 exclusively.')
 
@@ -123,25 +282,68 @@ class Utils:
         finite = np.isfinite(values)
         negative = finite & (values < 0)
         valid = finite & ~negative
+        max_code = 65534
+        physical_max = max_code / float(scale)
+        finite_values = values[finite]
+        physical_min = float(np.min(finite_values)) if finite_values.size else None
+        physical_max_observed = float(np.max(finite_values)) if finite_values.size else None
+        overflow = valid & (values > physical_max)
         rounded = np.rint(np.where(valid, values * scale, 0.0))
-        max_code = 65535 if nodata != 65535 else 65534
-        overflow = valid & (rounded > max_code)
 
         encoded = np.full(values.shape, nodata, dtype=np.uint16)
-        encoded[valid] = np.clip(rounded[valid], 0, max_code).astype(np.uint16)
+        encodable = valid & ~overflow
+        encoded[encodable] = rounded[encodable].astype(np.uint16)
         metadata = {
             'product': str(product),
             'physical_unit': str(unit),
-            'scale_factor': float(scale),
+            'stored_multiplier': float(scale),
             'decode_multiplier': float(1.0 / scale),
             'add_offset': 0.0,
             'nodata': int(nodata),
+            'encoding_version': 'GETPAK-ENC-2',
+            'valid_min': 0.0,
+            'valid_max': float(physical_max),
             'invalid_policy': 'non-finite and negative values map to nodata',
-            'overflow_policy': f'finite overflow clips to {max_code}',
+            'overflow_policy': 'finite physical overflow maps to nodata',
+            'resolution': float(1.0 / scale),
+            'maximum_physical_value': float(physical_max),
+            'dtype': 'uint16',
+            'raster_scale': float(1.0 / scale),
             'invalid_count': int((~finite).sum()),
             'negative_count': int(negative.sum()),
             'overflow_count': int(overflow.sum()),
             'valid_zero_count': int((valid & (values == 0)).sum()),
+            'finite_physical_min': physical_min,
+            'finite_physical_max': physical_max_observed,
+        }
+        return (encoded, metadata) if return_metadata else encoded
+
+    @staticmethod
+    def to_uint8_categorical(arr, nodata=255, product='OWT', unit='class',
+                             class_description=None, return_metadata=False):
+        """Encode categorical classes without treating class zero as no-data."""
+        if int(nodata) != 255:
+            raise ValueError('UInt8 categorical products reserve nodata=255.')
+        values = np.asarray(arr, dtype=float)
+        valid = np.isfinite(values) & (values >= 0) & (values <= 254)
+        valid &= values == np.rint(values)
+        encoded = np.full(values.shape, nodata, dtype=np.uint8)
+        encoded[valid] = values[valid].astype(np.uint8)
+        classes = sorted({int(value) for value in values[valid]})
+        metadata = {
+            'product': str(product),
+            'physical_unit': str(unit),
+            'stored_multiplier': 1.0,
+            'decode_multiplier': 1.0,
+            'add_offset': 0.0,
+            'nodata': int(nodata),
+            'encoding_version': 'GETPAK-ENC-2',
+            'class_codes': ','.join(str(value) for value in classes),
+            'class_description': class_description or 'Class codes are preserved as stored; 255 is no-data.',
+            'invalid_policy': 'invalid, non-finite, or out-of-range classes map to nodata',
+            'overflow_policy': 'out-of-range classes map to nodata',
+            'invalid_count': int((~valid).sum()),
+            'overflow_count': int((np.isfinite(values) & ((values < 0) | (values > 254))).sum()),
         }
         return (encoded, metadata) if return_metadata else encoded
 

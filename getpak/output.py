@@ -87,43 +87,51 @@ class Raster:
     @staticmethod
     def array2tiff(ndarray_data, str_output_file, transform, projection, no_data=-1,
                    compression='COMPRESS=PACKBITS', metadata=None):
-        """
-        Given an input ndarray and the desired projection parameters, create a raster.tif using GDT_Float32.
-
-        Parameters
-        ----------
-        @param ndarray_data: Inform if the index should be saved as array in the output folder
-        @param str_output_file: string of the path of the file to be written
-        @param transform: rasterio affine transformation matrix (resolution and "upper left" coordinate)
-        @param projection: projection CRS
-        @param no_data: the value for no data
-        @param compression: type of file compression
-
-        @return: None (If all goes well, array2tiff should pass and generate a file inside @str_output_file)
-        """
-        with rasterio.open(fp=str_output_file,
-                           mode='w',
-                           driver='GTiff',
-                           height=ndarray_data.shape[0],
-                           width=ndarray_data.shape[1],
-                           count=1,
-                           dtype=ndarray_data.dtype,
-                           crs=projection,
-                           transform=transform,
-                           nodata=no_data,
-                           options=[compression]) as file:
+        """Write a single-band GeoTIFF with standard and GET-Pak metadata."""
+        with rasterio.open(
+            fp=str_output_file,
+            mode='w',
+            driver='GTiff',
+            height=ndarray_data.shape[0],
+            width=ndarray_data.shape[1],
+            count=1,
+            dtype=ndarray_data.dtype,
+            crs=projection,
+            transform=transform,
+            nodata=no_data,
+            options=[compression],
+        ) as file:
             file.write(ndarray_data, 1)
             if metadata:
-                tags = {key.upper(): str(value) for key, value in metadata.items()}
+                tag_names = {
+                    'encoding_version': 'GETPAK_ENCODING_VERSION',
+                    'stored_multiplier': 'STORED_MULTIPLIER',
+                    'decode_multiplier': 'DECODE_MULTIPLIER',
+                    'add_offset': 'ADD_OFFSET',
+                    'physical_unit': 'PHYSICAL_UNIT',
+                    'product': 'PRODUCT',
+                    'valid_min': 'PHYSICAL_VALID_MIN',
+                    'valid_max': 'PHYSICAL_VALID_MAX',
+                    'finite_physical_min': 'FINITE_PRE_ENCODING_MIN',
+                    'finite_physical_max': 'FINITE_PRE_ENCODING_MAX',
+                    'raster_scale': 'RASTER_SCALE',
+                    'encoding_profile': 'ENCODING_PROFILE',
+                    'dtype': 'DTYPE',
+                }
+                tags = {}
+                for key, value in metadata.items():
+                    tag = tag_names.get(key, key.upper())
+                    if tag is None or value is None:
+                        continue
+                    tags[tag] = str(value)
                 file.update_tags(**tags)
-                scale = metadata.get('scale_factor')
-                if scale:
-                    file.scales = (1.0 / float(scale),)
+                stored_multiplier = metadata.get('stored_multiplier')
+                if stored_multiplier:
+                    file.scales = (1.0 / float(stored_multiplier),)
                     file.offsets = (float(metadata.get('add_offset', 0.0)),)
                 unit = metadata.get('physical_unit')
                 if unit:
                     file.units = (str(unit),)
-        pass
 
     @staticmethod
     def array2tiff_gdal(ndarray_data, str_output_file, transform, projection, no_data=-1,

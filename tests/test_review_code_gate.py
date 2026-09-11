@@ -90,7 +90,7 @@ def test_scaling_policy_round_trip_and_raster_metadata(tmp_path):
         values, scale=100, unit='NTU', product='Turb',
         return_metadata=True,
     )
-    assert encoded.tolist() == [65535, 65535, 0, 12, 65534, 65535]
+    assert encoded.tolist() == [65535, 65535, 0, 12, 65535, 65535]
     assert metadata['invalid_count'] == 2
     assert metadata['negative_count'] == 1
     assert metadata['overflow_count'] == 1
@@ -337,10 +337,22 @@ def test_stable_identity_overwrite_protection_and_timing_schema(
 
     target_dir = tmp_path / 'output' / '20LLQ' / 'Chla'
     target_dir.mkdir(parents=True)
-    target = target_dir / f'Chla_{uid}.tif'
-    target.write_bytes(b'existing')
-    with pytest.raises(FileExistsError, match='Refusing to overwrite'):
-        pipeline._output_target('Chla', 'Chla_', uid, '.tif')
+    pipeline.ledger_by_uid = {uid: {
+        'scene_uid': uid, 'record_id': 'record123', 'processor': 'ACOLITE',
+        'processor_version': 'unknown', 'tile': '20LLQ',
+        'acquisition_datetime_utc': '2024-01-01 10:00:00',
+    }}
+    target = Path(pipeline._output_filename('Chla', 'Chla_', uid, '.tif'))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(target, 'w', driver='GTiff', height=1, width=1, count=1,
+                       dtype='uint16', crs='EPSG:4326', transform=Affine.identity(),
+                       nodata=65535) as dst:
+        dst.write(np.array([[1]], dtype='uint16'), 1)
+        dst.update_tags(SCENE_UID=uid, RECORD_ID='record123', PROCESSOR='ACOLITE',
+                        PROCESSOR_VERSION='unknown',
+                        GETPAK_ENCODING_VERSION='GETPAK-ENC-2')
+    assert pipeline._output_target('Chla', 'Chla_', uid, '.tif') == str(target)
+    assert pipeline._target_was_skipped(target)
 
     required = {
         'discovery', 'read', 'mask_reproject', 'filtering_owt_inversion',
@@ -390,10 +402,11 @@ def test_per_band_negative_diagnostics_use_finite_water_support():
         "Red": (("y", "x"), [[0.1, -0.2, np.inf, np.nan]]),
     })
     diagnostics = Pipelines._rrs_diagnostics(data, ("Blue", "Red", "Missing"))
-    assert diagnostics["Blue"] == {"neg_count": 1, "finite_count": 3, "reason": None, "unit": "sr-1"}
-    assert diagnostics["Red"] == {"neg_count": 1, "finite_count": 2, "reason": None, "unit": "sr-1"}
+    assert diagnostics["Blue"] == {"neg_count": 1, "finite_count": 3, "neg_fraction": pytest.approx(1 / 3), "reason": None, "unit": "sr-1"}
+    assert diagnostics["Red"] == {"neg_count": 1, "finite_count": 2, "neg_fraction": pytest.approx(0.5), "reason": None, "unit": "sr-1"}
     assert diagnostics["Missing"]["neg_count"] is None
     assert diagnostics["Missing"]["reason"] == "missing_band"
+    assert diagnostics["Missing"]["neg_fraction"] is None
 
 
 def test_pipeline_persists_pre_qc_diagnostics_and_invalid_outputs(monkeypatch, tmp_path):

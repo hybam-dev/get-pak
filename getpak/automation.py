@@ -30,7 +30,9 @@ class Pipelines:
     
     def __init__(self, config_path=None):
         # GET-Pak settings
-        self.settings = u.read_config(config_path=config_path)
+        self.settings = u.resolve_encoding_settings(u.read_config(config_path=config_path))
+        self.encoding_settings = self.settings
+        self._skip_output_targets = set()
         self.settings['_config_dir'] = str(Path(config_path).resolve().parent) if config_path else str(Path(__file__).resolve().parent.parent)
         self.INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
         self._run_started_perf = time.perf_counter()
@@ -235,11 +237,24 @@ class Pipelines:
         diagnostics = {}
         for band in bands:
             if band not in rrs_dict:
-                diagnostics[band] = {'neg_count': None, 'finite_count': None, 'reason': 'missing_band', 'unit': 'sr-1'}
+                diagnostics[band] = {
+                    'neg_count': None, 'finite_count': None,
+                    'neg_fraction': None, 'reason': 'missing_band',
+                    'unit': 'sr-1',
+                }
                 continue
             values = np.asarray(rrs_dict[band].values, dtype=float)
             finite = np.isfinite(values)
-            diagnostics[band] = {'neg_count': int(np.count_nonzero(finite & (values < 0))), 'finite_count': int(np.count_nonzero(finite)), 'reason': None, 'unit': 'sr-1'}
+            finite_count = int(np.count_nonzero(finite))
+            neg_count = int(np.count_nonzero(finite & (values < 0)))
+            diagnostics[band] = {
+                'neg_count': neg_count,
+                'finite_count': finite_count,
+                'neg_fraction': (float(neg_count / finite_count)
+                                 if finite_count else None),
+                'reason': None if finite_count else 'no_finite_water_support',
+                'unit': 'sr-1',
+            }
         return diagnostics
 
     @staticmethod
@@ -293,31 +308,175 @@ class Pipelines:
         self.timing_manifest_path = self._timing_target()
         self._write_json(self.timing_manifest_path, self.timing_manifest)
 
-    def _output_target(self, folder, prefix, scene_uid, suffix):
-        target = os.path.join(
-            self.output_folder, self.tile_id, folder,
-            f'{prefix}{scene_uid}{suffix}',
-        )
-        if os.path.exists(target) and not self.overwrite_outputs:
-            raise FileExistsError(
-                f'Refusing to overwrite existing output: {target}. '
-                'Set overwrite_outputs=True only after reviewing the collision.'
+    def _processor_version(self, info=None):
+        info = info or {}
+        value = info.get('processor_version') or info.get('grs_ver')
+        if self.ac_processor == 'GRS':
+            if str(value or '').strip().upper() in {'', 'NA', 'N/A', 'UNKNOWN'}:
+                value = self.grs_file_version
+        return str(value or 'unknown')
+
+    @staticmethod
+    def _acquisition_fields(info):
+        acquired = info['pydate']
+        if getattr(acquired, 'tzinfo', None) is not None:
+            acquired = acquired.astimezone(timezone.utc).replace(tzinfo=None)
+        return {
+            'acquisition_datetime_utc': acquired.strftime('%Y-%m-%d %H:%M:%S'),
+            'acquisition_date': acquired.strftime('%Y-%m-%d'),
+            'acquisition_time_utc': acquired.strftime('%H:%M:%S'),
+        }
+
+    @staticmethod
+    def _tag_value(value):
+        return '' if value is None else str(value)
+
+    def _output_contract_metadata(self, scene_uid, product, *, unit,
+                                  stored_multiplier, nodata, categorical=False):
+        entry = getattr(self, 'ledger_by_uid', {}).get(scene_uid, {})
+        info = getattr(self, 'meta', {}).get(scene_uid, {})
+        acquired = self._acquisition_fields(info) if info else {
+            'acquisition_datetime_utc': entry.get('acquisition_datetime_utc', ''),
+            'acquisition_date': entry.get('acquisition_date', ''),
+            'acquisition_time_utc': entry.get('acquisition_time_utc', ''),
+        }
+        if not acquired.get("acquisition_datetime_utc"):
+            raise ValueError(
+                f"Cannot write {product} for {scene_uid}: source acquisition time is missing."
             )
+        try:
+            datetime.strptime(acquired["acquisition_datetime_utc"], "%Y-%m-%d %H:%M:%S")
+        except ValueError as exc:
+            raise ValueError(
+                f"Cannot write {product} for {scene_uid}: acquisition time is invalid."
+            ) from exc
+        metadata = {
+            'product': product,
+            'product_family': 'categorical' if categorical else 'continuous',
+            'physical_unit': unit,
+            'stored_multiplier': float(stored_multiplier),
+            'decode_multiplier': float(1.0 / stored_multiplier),
+            'add_offset': 0.0,
+            'nodata': int(nodata),
+            'encoding_version': 'GETPAK-ENC-2',
+            'encoding_profile': self.encoding_settings['output_encoding']['encoding_profile'],
+            'dtype': self.encoding_settings['output_encoding'][
+                'categorical_dtype' if categorical else 'continuous_dtype'
+            ],
+            'raster_scale': float(1.0 / stored_multiplier),
+            'resolution': float(1.0 / stored_multiplier),
+            'maximum_physical_value': (
+                None if categorical else float(65534.0 / stored_multiplier)
+            ),
+            'acquisition_datetime_utc': acquired['acquisition_datetime_utc'],
+            'acquisition_date': acquired['acquisition_date'],
+            'acquisition_time_utc': acquired['acquisition_time_utc'],
+            'tile': self._normalize_tile(entry.get('tile', self.tile_id)),
+            'platform': entry.get('platform', entry.get('mission', info.get('mission', 'UNKNOWN'))),
+            'processor': entry.get('processor', self.ac_processor),
+            'processor_version': entry.get('processor_version', self._processor_version(info)),
+            'scene_uid': entry.get('scene_uid', scene_uid),
+            'record_id': entry.get('record_id', scene_uid),
+            'source_product_name': entry.get('source_product_name', info.get('basename', '')),
+        }
+        return metadata
+
+    def _output_filename(self, folder, prefix, scene_uid, suffix):
+        entry = getattr(self, "ledger_by_uid", {}).get(scene_uid, {})
+        product = str(prefix).rstrip('_')
+        if product == 'OWTs':
+            product = 'OWT'
+        record_id = entry.get('record_id', scene_uid)
+        timestamp = entry.get('acquisition_datetime_utc', '')
+        timestamp = timestamp.replace('-', '').replace(':', '').replace(' ', 'T')[:15]
+        if not timestamp:
+            raise ValueError(
+                f"Cannot generate {product} filename for {scene_uid}: source acquisition time is missing."
+            )
+        tile = self._normalize_tile(entry.get('tile', self.tile_id))
+        return os.path.join(
+            self.output_folder, self.tile_id, folder,
+            f'{product}_{timestamp}_T{tile}_{record_id}{suffix}',
+        )
+
+    def _existing_output_identity(self, target):
+        try:
+            import rasterio
+            with rasterio.open(target) as source:
+                tags = source.tags()
+        except Exception as exc:
+            raise FileExistsError(
+                f'Cannot establish collision identity for existing output: {target}'
+            ) from exc
+        required = {
+            'SCENE_UID': tags.get('SCENE_UID'),
+            'RECORD_ID': tags.get('RECORD_ID'),
+            'PROCESSOR': tags.get('PROCESSOR'),
+            'PROCESSOR_VERSION': tags.get('PROCESSOR_VERSION'),
+            'GETPAK_ENCODING_VERSION': tags.get('GETPAK_ENCODING_VERSION'),
+        }
+        if any(value in (None, '') for value in required.values()):
+            raise FileExistsError(
+                f'Cannot establish required collision identity for existing output: {target}'
+            )
+        return required
+
+    def _output_target(self, folder, prefix, scene_uid, suffix):
+        target = self._output_filename(folder, prefix, scene_uid, suffix)
+        if not os.path.exists(target):
+            return target
+
+        # Text sidecars have deterministic scene/record targets but no raster tags.
+        if suffix.lower() != '.tif':
+            if not self.overwrite_outputs:
+                self._skip_output_targets.add(os.path.abspath(target))
+            return target
+
+        entry = getattr(self, 'ledger_by_uid', {}).get(scene_uid, {})
+        expected = {
+            'SCENE_UID': entry.get('scene_uid'),
+            'RECORD_ID': entry.get('record_id', scene_uid),
+            'PROCESSOR': entry.get('processor', self.ac_processor),
+            'PROCESSOR_VERSION': entry.get('processor_version'),
+            'GETPAK_ENCODING_VERSION': 'GETPAK-ENC-2',
+        }
+        if any(value in (None, '') for value in expected.values()):
+            raise FileExistsError(
+                f'Cannot establish collision identity for existing output: {target}'
+            )
+        actual = self._existing_output_identity(target)
+        expected = {key: self._tag_value(value) for key, value in expected.items()}
+        if actual != expected:
+            raise FileExistsError(
+                f'Refusing to overwrite conflicting output identity: {target}'
+            )
+        if not self.overwrite_outputs:
+            self._skip_output_targets.add(os.path.abspath(target))
         return target
+
+    def _target_was_skipped(self, target):
+        return os.path.abspath(os.fspath(target)) in self._skip_output_targets
 
     def _write_scaled_raster(self, values, folder, prefix, scene_uid, *,
                              scale, unit, transform, projection):
         target = self._output_target(folder, prefix, scene_uid, '.tif')
+        if self._target_was_skipped(target):
+            return target, {'skipped_existing': True}
+        nodata = self.encoding_settings['output_encoding']['continuous_nodata']
         encoded, metadata = u.to_uint16_scaled(
-            values, scale=scale, nodata=65535, unit=unit,
-            product=prefix.rstrip('_'), return_metadata=True,
+            values, scale=scale, nodata=nodata, unit=unit,
+            product=str(prefix).rstrip('_'), return_metadata=True,
         )
+        metadata.update(self._output_contract_metadata(
+            scene_uid, str(prefix).rstrip('_'), unit=unit,
+            stored_multiplier=scale, nodata=nodata,
+        ))
         r.array2tiff(
             ndarray_data=encoded,
             str_output_file=target,
             transform=transform,
             projection=projection,
-            no_data=65535,
+            no_data=nodata,
             metadata=metadata,
         )
         return target, metadata
@@ -325,14 +484,27 @@ class Pipelines:
     def _write_categorical_raster(self, values, folder, prefix, scene_uid, *,
                                   transform, projection):
         target = self._output_target(folder, prefix, scene_uid, '.tif')
+        if self._target_was_skipped(target):
+            return target
+        product = 'OWT' if str(prefix).rstrip('_') == 'OWTs' else str(prefix).rstrip('_')
+        nodata = self.encoding_settings['output_encoding']['categorical_nodata']
+        encoded, metadata = u.to_uint8_categorical(
+            values, nodata=nodata, product=product, return_metadata=True,
+        )
+        metadata.update(self._output_contract_metadata(
+            scene_uid, product, unit='class', stored_multiplier=1,
+            nodata=nodata, categorical=True,
+        ))
         r.array2tiff(
-            ndarray_data=values,
+            ndarray_data=encoded,
             str_output_file=target,
             transform=transform,
             projection=projection,
-            no_data=0,
+            no_data=nodata,
+            metadata=metadata,
         )
         return target
+
     def run(self, compute_l2b=None, make_report=None):
         """
         Run the GET-Pak processing flow.
@@ -397,8 +569,12 @@ class Pipelines:
             entry = {
                 'scene_uid': scene_uid, 'record_id': record_id,
                 'processor': self.ac_processor,
+                'processor_version': self._processor_version(info),
                 'mission': str(info.get('mission', 'UNKNOWN')),
+                'platform': str(info.get('mission', 'UNKNOWN')),
+                'source_product_name': str(info.get('basename', Path(source_path).name)),
                 'acquisition_time': info['pydate'].isoformat(),
+                **self._acquisition_fields(info),
                 'tile': tile,
                 'source_path': str(source_path),
                 'mask_path': None,
@@ -675,17 +851,18 @@ class Pipelines:
                     pixels = np.vstack((pixels, np.array([
                         [f'scene_rrs_{band}_{field}', '' if values[field] is None else str(values[field])]
                         for band, values in rrs_diagnostics.items()
-                        for field in ('neg_count', 'finite_count')
+                        for field in ('neg_count', 'finite_count', 'neg_fraction', 'reason')
                     ], dtype=object)))
                     write_start = time.perf_counter()
                     str_output_file = self._output_target(
                         'npix', 'npixels_', key, '.txt'
                     )
-                    np.savetxt(str_output_file, pixels, fmt='%s', delimiter=';')
+                    if not self._target_was_skipped(str_output_file):
+                        np.savetxt(str_output_file, pixels, fmt='%s', delimiter=';')
                     results[key]['npix'] = str_output_file
 
                     str_output_file = self._write_categorical_raster(
-                        owt_classes[0, :, :].astype('uint8'),
+                        np.where(np.isfinite(np.asarray(red)), owt_classes[0, :, :], np.nan),
                         'OWT', 'OWTs_', key,
                         transform=grs.attrs['trans'],
                         projection=grs.attrs['proj'],
@@ -693,7 +870,7 @@ class Pipelines:
                     results[key]['OWT'] = str_output_file
 
                     str_output_file = self._write_categorical_raster(
-                        classes_turb.astype('uint8'),
+                        np.where(np.isfinite(np.asarray(red)), classes_turb, np.nan),
                         'OWTSPM', 'OWTSPM_', key,
                         transform=grs.attrs['trans'],
                         projection=grs.attrs['proj'],
@@ -744,7 +921,7 @@ class Pipelines:
                         for product, values in rrs_products.items():
                             path, scale_metadata = self._write_scaled_raster(
                                 values, product, f'{product}_', key,
-                                scale=10000, unit='sr-1',
+                                scale=self.encoding_settings['output_encoding']['rrs_multiplier'], unit='sr-1',
                                 transform=grs.attrs['trans'],
                                 projection=grs.attrs['proj'],
                             )
@@ -759,7 +936,7 @@ class Pipelines:
                     ):
                         path, scale_metadata = self._write_scaled_raster(
                             values, product, f'{product}_', key,
-                            scale=100, unit=unit,
+                            scale=self.encoding_settings['output_encoding'][u.product_multiplier_key(product)], unit=unit,
                             transform=grs.attrs['trans'],
                             projection=grs.attrs['proj'],
                         )
@@ -790,7 +967,11 @@ class Pipelines:
                 print(f'Error processing {key}: {e}')
                 results[key]['status'] = 'error'
                 results[key]['error'] = str(e)
-                if ledger_entry['status'] in {'matched', 'processing'}:
+                if isinstance(e, FileExistsError):
+                    ledger_entry['status'] = 'output_collision'
+                    ledger_entry['reason'] = 'existing output identity collision'
+                    ledger_entry['collision'] = str(e)
+                elif ledger_entry['status'] in {'matched', 'processing'}:
                     ledger_entry['status'] = 'processing_error'
                 ledger_entry['error'] = str(e)
                 t_hour, t_min, t_sec,_ = u.tac()
@@ -906,29 +1087,219 @@ class Pipelines:
         )
         return matched
 
+    @staticmethod
+    def _datetime_from_text(value):
+        parsed = pd.to_datetime(value, errors="coerce", utc=True)
+        if pd.isna(parsed):
+            raise ValueError(f"Invalid acquisition datetime metadata: {value!r}.")
+        return parsed.to_pydatetime().astimezone(timezone.utc).replace(tzinfo=None)
+
+    @staticmethod
+    def _filename_acquisition(path):
+        match = re.match(r"^[^_]+_(20\d{6}T\d{6})_T[0-9A-Z]{5}_[^/]+\.tif$", Path(path).name)
+        return Pipelines._datetime_from_text(match.group(1)) if match else None
+
+    @staticmethod
+    def _raster_provenance(path):
+        if not path or not str(path).lower().endswith(".tif") or not os.path.isfile(path):
+            return {}
+        import rasterio
+        try:
+            with rasterio.open(path) as source:
+                tags = source.tags()
+        except Exception as exc:
+            return {"provenance_error": str(exc)}
+        result = {}
+        for key, tag in {
+            "scene_uid": "SCENE_UID", "record_id": "RECORD_ID",
+            "processor": "PROCESSOR", "processor_version": "PROCESSOR_VERSION",
+            "platform": "PLATFORM", "tile": "TILE",
+            "encoding_version": "GETPAK_ENCODING_VERSION",
+            "encoding_profile": "ENCODING_PROFILE",
+        }.items():
+            if tags.get(tag) not in (None, ""):
+                result[key] = tags[tag]
+        if tags.get("ACQUISITION_DATETIME_UTC") not in (None, ""):
+            result["acquisition_datetime_utc"] = Pipelines._datetime_from_text(
+                tags["ACQUISITION_DATETIME_UTC"]
+            )
+        return result
+    def _ledger_index(self):
+        indexed = {}
+        root = Path(self.output_folder) / self.tile_id
+        for ledger_path in sorted(root.glob("*_scene_ledger.json")):
+            try:
+                payload = json.loads(ledger_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            rows = payload if isinstance(payload, list) else payload.get("scenes", [])
+            for source_row in rows:
+                if not isinstance(source_row, dict) or not source_row.get("record_id"):
+                    continue
+                record_id = str(source_row["record_id"])
+                row = dict(source_row)
+                row["_ledger_sources"] = list(row.get("_ledger_sources", [])) + [str(ledger_path)]
+                previous = indexed.get(record_id)
+                if previous:
+                    conflicts = set(previous.get("_ledger_conflict_fields", []))
+                    for field in ("scene_uid", "source_path", "processor", "processor_version", "tile"):
+                        if previous.get(field) not in (None, "") and row.get(field) not in (None, "") and str(previous[field]) != str(row[field]):
+                            conflicts.add(field)
+                    row["_ledger_sources"] = list(previous.get("_ledger_sources", [])) + row["_ledger_sources"]
+                    if conflicts:
+                        row["_ledger_conflict_fields"] = sorted(conflicts)
+                indexed[record_id] = row
+        return indexed
+
     def line_builder(self):
         output_root = os.path.join(self.output_folder, self.tile_id)
-        npix_folder = os.path.join(output_root, 'npix')
+        npix_folder = os.path.join(output_root, "npix")
         if not os.path.isdir(npix_folder):
-            raise ValueError('No npix output folder is available to build a report.')
+            raise ValueError("No npix output folder is available to build a report.")
         uids = sorted(
-            self.get_uid(name) for name in os.listdir(npix_folder)
-            if name.startswith('npixels_') and name.endswith('.txt')
+            self.get_uid(name)
+            for name in os.listdir(npix_folder)
+            if name.startswith("npixels_") and name.endswith(".txt")
         )
         if not uids:
-            raise ValueError('No processed scenes are available to build a report.')
-        return {uid: self.match_file_uid(output_root, uid) for uid in uids}
+            raise ValueError("No processed scenes are available to build a report.")
+        ledger = self._ledger_index()
+        rows = {}
+        for uid in uids:
+            row = self.match_file_uid(output_root, uid)
+            record_id = uid.rsplit("_", 1)[-1]
+            row.update({key: value for key, value in ledger.get(record_id, {}).items() if key not in {"outputs", "error"}})
+            row["record_id"] = record_id
+            provenance = {}
+            for product in ("Chla", "Turb", "HySPM", "OWT", "OWTSPM"):
+                provenance = self._raster_provenance(row.get(product))
+                if provenance:
+                    break
+            filename_date = next((self._filename_acquisition(row.get(product)) for product in ("Chla", "Turb", "HySPM", "OWT", "OWTSPM") if row.get(product)), None)
+            acquisition = provenance.get("acquisition_datetime_utc") or filename_date
+            if acquisition is None:
+                row["acquisition_status"] = "error"
+                row["acquisition_error"] = "No valid acquisition time in raster metadata or standardized output filename; cannot report record_id=" + record_id + "."
+            else:
+                row["acquisition_status"] = "success"
+                row["acquisition_datetime_utc"] = acquisition.strftime("%Y-%m-%d %H:%M:%S")
+                row["acquisition_date"] = acquisition.strftime("%Y-%m-%d")
+                row["acquisition_time_utc"] = acquisition.strftime("%H:%M:%S")
+            if provenance.get("scene_uid"):
+                row["scene_uid"] = provenance["scene_uid"]
+            row.setdefault("scene_uid", ledger.get(record_id, {}).get("scene_uid", ""))
+            rows[uid] = row
+        return rows
+
+    @staticmethod
+    def _flatten_report_row(row):
+        flattened = {}
+        for key, value in row.items():
+            if key in ("scaling", "rrs_diagnostics", "outputs") and isinstance(value, dict):
+                for child, child_value in value.items():
+                    if isinstance(child_value, dict):
+                        for leaf, leaf_value in child_value.items():
+                            flattened[f"{key}_{child}_{leaf}"] = leaf_value
+                    else:
+                        flattened[f"{key}_{child}"] = child_value
+            elif key not in ("IMG", "WM"):
+                flattened[key] = value
+        return flattened
 
     @staticmethod
     def build_excel(itermediary_dict, file_to_save):
-        df = pd.DataFrame(itermediary_dict).T
-        df.drop(columns=['npix', 'OWT', 'OWTSPM', 'Chla', 'Turb', 'HySPM', 'Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2', 'RedEdge3', 'Nir2'], inplace=True, errors='ignore')
-        ## ALTERNATIVE: Move coumns to end of DF
-        # df = df[[c for c in df if c not in cols_to_move] + cols_to_move]
-        df.sort_index(inplace=True)
-        df.to_excel(file_to_save)
-        pass
-    
+        rows = [Pipelines._flatten_report_row(row) for row in itermediary_dict.values()]
+        leading = ["record_id", "scene_uid", "acquisition_datetime_utc", "acquisition_date", "acquisition_time_utc"]
+        invalid = [row.get("record_id", "") for row in rows if row.get("acquisition_status") != "error" and not row.get("acquisition_datetime_utc")]
+        if invalid:
+            raise ValueError("Cannot write consolidated report without valid acquisition dates: " + ", ".join(map(str, invalid)))
+        primary = ("Chla", "Turb", "HySPM")
+        rrs = ("Aerosol", "Blue", "Green", "Red", "RedEdge1", "RedEdge2", "RedEdge3", "Nir2")
+        statistic_suffixes = {
+            "min", "max", "mean", "count", "std", "median",
+            "roi_features", "roi_features_with_data", "status",
+        }
+        quality = {"Water_pixels", "Neg_Rrs_B4", "Low_Rrs", "OWT_1", "npix_status"}
+        numeric_quality = {"Water_pixels", "Neg_Rrs_B4", "Low_Rrs", "OWT_1"}
+        unique = list(dict.fromkeys(key for row in rows for key in row))
+        def is_stat(key, products):
+            for product in products:
+                prefix = product + "_"
+                if key.startswith(prefix):
+                    return key[len(prefix):] in statistic_suffixes
+            return False
+        water_columns = list(dict.fromkeys(
+            [key for key in unique if key in quality or is_stat(key, primary)]
+            + [key for key in unique if is_stat(key, rrs)]
+        ))
+        processing_columns = [key for key in unique if key not in set(leading + water_columns) and key != "acquisition_status"]
+        preferred = ("source_path", "mask_path", "processor", "platform", "processor_version", "tile", "source_product_name", "mask_mode", "mask_match_type", "report_file_status", "missing_products", "ambiguous_products", "status", "reason", "error", "acquisition_status")
+        processing_columns = [key for key in preferred if key in processing_columns or (key == "acquisition_status" and key in unique)] + [key for key in processing_columns if key not in preferred]
+        rows.sort(key=lambda row: (pd.to_datetime(row.get("acquisition_datetime_utc"), errors="coerce", utc=True), str(row.get("record_id", ""))))
+
+        def frame(columns):
+            result = pd.DataFrame([{column: row.get(column) for column in leading + columns} for row in rows], columns=leading + columns)
+            dt = pd.to_datetime(result["acquisition_datetime_utc"], errors="coerce", utc=True).dt.tz_localize(None)
+            result["acquisition_datetime_utc"] = dt
+            result["acquisition_date"] = dt.dt.date
+            result["acquisition_time_utc"] = dt.dt.time
+            for column in columns:
+                if (column in numeric_quality or column.endswith(("_count", "_min", "_max", "_mean", "_std", "_median", "_fraction", "_multiplier", "_nodata", "_features", "_features_with_data"))):
+                    result[column] = pd.to_numeric(result[column], errors="coerce")
+            return result
+
+        water = frame(water_columns)
+        processing = frame(processing_columns)
+        Path(file_to_save).parent.mkdir(parents=True, exist_ok=True)
+        with pd.ExcelWriter(file_to_save, engine="openpyxl", datetime_format="yyyy-mm-dd hh:mm:ss", date_format="yyyy-mm-dd") as writer:
+            water.to_excel(writer, sheet_name="Water quality", index=False)
+            processing.to_excel(writer, sheet_name="Processing details", index=False)
+            workbook = writer.book
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.comments import Comment
+            for worksheet in workbook.worksheets:
+                worksheet.freeze_panes = "F2"
+                worksheet.auto_filter.ref = worksheet.dimensions
+                worksheet.sheet_view.showGridLines = False
+                for cell in worksheet[1]:
+                    cell.font = Font(bold=True, color="FFFFFF")
+                    cell.fill = PatternFill("solid", fgColor="1F4E78")
+                if worksheet.title == "Water quality":
+                    unit_notes = {
+                        "Chla": "Chl-a statistics use physical units of mg m-3; *_count and *_roi_features are counts; *_status is text.",
+                        "Turb": "Turbidity statistics use physical units of NTU; *_count and *_roi_features are counts; *_status is text.",
+                        "HySPM": "HySPM statistics use physical units of mg L-1; *_count and *_roi_features are counts; *_status is text.",
+                        "Aerosol": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
+                        "Blue": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
+                        "Green": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
+                        "Red": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
+                        "RedEdge1": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
+                        "RedEdge2": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
+                        "RedEdge3": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
+                        "Nir2": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
+                    }
+                    for cell in worksheet[1]:
+                        for prefix, note in unit_notes.items():
+                            if str(cell.value).startswith(prefix + "_"):
+                                cell.comment = Comment(note, "GET-Pak")
+                                break
+                for cell in worksheet[1]:
+                    cell.alignment = Alignment(wrap_text=True, vertical="center")
+                worksheet.row_dimensions[1].height = 30
+                for column in worksheet.iter_cols(1, worksheet.max_column):
+                    name = worksheet.cell(1, column[0].column).value or ""
+                    width = min(42, max(12, len(str(name)) + 2, max((len(str(cell.value)) for cell in column[1:25] if cell.value is not None), default=0) + 2))
+                    worksheet.column_dimensions[column[0].column_letter].width = width
+                for cell in worksheet["A"][1:] + worksheet["B"][1:]:
+                    cell.number_format = "@"
+                for cell in worksheet["C"][1:]:
+                    cell.number_format = "yyyy-mm-dd hh:mm:ss"
+                for cell in worksheet["D"][1:]:
+                    cell.number_format = "yyyy-mm-dd"
+                for cell in worksheet["E"][1:]:
+                    cell.number_format = "hh:mm:ss"
+            workbook.active = 0
+
     # ,---------,
     # | PARSERS |
     # '---------'
@@ -948,35 +1319,159 @@ class Pipelines:
             return {'npix_status': 'error', 'npix_error': str(error)}
     
     @staticmethod
-    def _parse_tifs(path_to_tif, shp_file, prefix='var', scale_factor=100):
+    def _parse_tifs(path_to_tif, shp_file, prefix='var', encoding_settings=None):
         empty = {
-            f'{prefix}_{name}': None
-            for name in ('min', 'max', 'mean', 'count', 'std', 'median')
+            f"{prefix}_{name}": None
+            for name in ("min", "max", "mean", "count", "std", "median")
         }
         if not path_to_tif or not os.path.isfile(path_to_tif):
-            empty[f'{prefix}_status'] = 'missing_product'
+            empty[f"{prefix}_status"] = "missing_product"
             return empty
+
         try:
+            import rasterio
+            with rasterio.open(path_to_tif) as source:
+                tags = source.tags()
+                nodata = source.nodata
+                reader_scale = source.scales[0] if source.scales else None
+                reader_offset = source.offsets[0] if source.offsets else None
+
+            version = tags.get("GETPAK_ENCODING_VERSION")
+            stored_raw = tags.get("STORED_MULTIPLIER")
+            decode_raw = tags.get("DECODE_MULTIPLIER")
+            raster_raw = tags.get("RASTER_SCALE")
+            offset_raw = tags.get("ADD_OFFSET")
+            # Rasterio reports scale=1.0 and offset=0.0 for an untagged raster.
+            # Those defaults are not authoritative GET-Pak encoding metadata.
+            if raster_raw in (None, "") and reader_scale is not None:
+                try:
+                    if not np.isclose(float(reader_scale), 1.0):
+                        raster_raw = reader_scale
+                except (TypeError, ValueError):
+                    raster_raw = reader_scale
+            if offset_raw in (None, "") and reader_offset is not None:
+                try:
+                    if not np.isclose(float(reader_offset), 0.0):
+                        offset_raw = reader_offset
+                except (TypeError, ValueError):
+                    offset_raw = reader_offset
+
+            if raster_raw not in (None, "") and reader_scale is not None:
+                try:
+                    reader_scale_value = float(reader_scale)
+                    tagged_scale_value = float(raster_raw)
+                except (TypeError, ValueError):
+                    reader_scale_value = tagged_scale_value = None
+                if (reader_scale_value is not None and tagged_scale_value is not None
+                        and not np.isclose(reader_scale_value, 1.0)
+                        and not np.isclose(reader_scale_value, tagged_scale_value, rtol=1e-9, atol=1e-12)):
+                    raise ValueError(f"{prefix} raster has conflicting explicit raster scale metadata.")
+            if offset_raw not in (None, "") and reader_offset is not None:
+                try:
+                    reader_offset_value = float(reader_offset)
+                    tagged_offset_value = float(offset_raw)
+                except (TypeError, ValueError):
+                    reader_offset_value = tagged_offset_value = None
+                if (reader_offset_value is not None and tagged_offset_value is not None
+                        and not np.isclose(reader_offset_value, 0.0)
+                        and not np.isclose(reader_offset_value, tagged_offset_value, rtol=1e-9, atol=1e-12)):
+                    raise ValueError(f"{prefix} raster has conflicting explicit offset metadata.")
+            if version not in (None, "") and version != "GETPAK-ENC-2":
+                raise ValueError(
+                    f"{prefix} raster has invalid or unsupported embedded encoding version: {version!r}."
+                )
+            factor_fields = (
+                ("STORED_MULTIPLIER", stored_raw),
+                ("DECODE_MULTIPLIER", decode_raw),
+                ("RASTER_SCALE", raster_raw),
+            )
+            present_factors = [(name, value) for name, value in factor_fields
+                               if value not in (None, "")]
+            parsed_factors = {}
+            for name, value in present_factors:
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{prefix} raster has an invalid {name}.") from exc
+                if not np.isfinite(parsed) or parsed <= 0:
+                    raise ValueError(f"{prefix} raster has an invalid {name}.")
+                parsed_factors[name] = parsed
+
+            if present_factors:
+                stored_multiplier = parsed_factors.get("STORED_MULTIPLIER")
+                decode_values = [
+                    (name, parsed_factors[name])
+                    for name in ("DECODE_MULTIPLIER", "RASTER_SCALE")
+                    if name in parsed_factors
+                ]
+                if stored_multiplier is not None:
+                    decode_multiplier = 1.0 / stored_multiplier
+                elif decode_values:
+                    decode_multiplier = decode_values[0][1]
+                    stored_multiplier = 1.0 / decode_multiplier
+                else:
+                    raise ValueError(f"{prefix} raster has no usable multiplier metadata.")
+                for name, value in decode_values:
+                    if not np.isclose(value, decode_multiplier, rtol=1e-9, atol=1e-12):
+                        raise ValueError(f"{prefix} raster has contradictory decode metadata." if name == "DECODE_MULTIPLIER" else f"{prefix} raster has contradictory raster scale metadata.")
+                decode_source = "embedded_metadata"
+                warning = None
+            else:
+                # Version, descriptive tags, and an explicit zero offset do not
+                # supply a decoding factor; use the product setting visibly.
+                settings = u.resolve_encoding_settings(dict(encoding_settings or {}))
+                stored_multiplier = float(u.output_multiplier(settings, prefix))
+                decode_multiplier = 1.0 / stored_multiplier
+                decode_source = "settings_fallback"
+                warning = (
+                    f"{prefix} raster has no authoritative embedded multiplier; "
+                    f"settings_fallback multiplier {stored_multiplier:g} was used."
+                )
+
+            if offset_raw not in (None, ""):
+                try:
+                    offset = float(offset_raw)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"{prefix} raster has a conflicting nonzero or invalid ADD_OFFSET."
+                    ) from exc
+                if not np.isfinite(offset) or not np.isclose(offset, 0.0):
+                    raise ValueError(
+                        f"{prefix} raster has a conflicting nonzero or invalid ADD_OFFSET."
+                    )
+
+            if nodata is None:
+                raise ValueError(f"{prefix} raster has no nodata value; cannot mask invalid pixels safely.")
             stats = m.shp_stats(tif_file=path_to_tif, shp_poly=shp_file)
         except Exception as error:
-            empty[f'{prefix}_status'] = 'error'
-            empty[f'{prefix}_error'] = str(error)
+            empty[f"{prefix}_status"] = "error"
+            empty[f"{prefix}_error"] = str(error)
             return empty
 
-        def _fix_scale(value, factor=100, digits=6):
-            return None if value is None else round(value / factor, digits)
+        def _decode(value, digits=6):
+            return None if value is None else round(float(value) * decode_multiplier, digits)
 
-        return {
-            f'{prefix}_min': _fix_scale(stats.get('min'), factor=scale_factor),
-            f'{prefix}_max': _fix_scale(stats.get('max'), factor=scale_factor),
-            f'{prefix}_mean': _fix_scale(stats.get('mean'), factor=scale_factor),
-            f'{prefix}_count': stats.get('count', 0),
-            f'{prefix}_std': _fix_scale(stats.get('std'), factor=scale_factor),
-            f'{prefix}_median': _fix_scale(stats.get('median'), factor=scale_factor),
-            f'{prefix}_status': stats.get('roi_status', 'success'),
-            f'{prefix}_roi_features': stats.get('roi_features'),
-            f'{prefix}_roi_features_with_data': stats.get('roi_features_with_data'),
+        result = {
+            f"{prefix}_min": _decode(stats.get("min")),
+            f"{prefix}_max": _decode(stats.get("max")),
+            f"{prefix}_mean": _decode(stats.get("mean")),
+            f"{prefix}_count": stats.get("count", 0),
+            f"{prefix}_std": _decode(stats.get("std")),
+            f"{prefix}_median": _decode(stats.get("median")),
+            f"{prefix}_status": stats.get("roi_status", "success"),
+            f"{prefix}_roi_features": stats.get("roi_features"),
+            f"{prefix}_roi_features_with_data": stats.get("roi_features_with_data"),
+            f"{prefix}_encoding_version": version,
+            f"{prefix}_encoding_profile": tags.get("ENCODING_PROFILE"),
+            f"{prefix}_physical_unit": tags.get("PHYSICAL_UNIT"),
+            f"{prefix}_applied_multiplier": stored_multiplier,
+            f"{prefix}_decode_multiplier": decode_multiplier,
+            f"{prefix}_decode_source": decode_source,
+            f"{prefix}_nodata": nodata,
         }
+        if warning:
+            result[f"{prefix}_warning"] = warning
+        return result
 
     def build_report(self):
         report_start = time.perf_counter()
@@ -998,47 +1493,47 @@ class Pipelines:
             # One-liners to fetch pixel data inside ROI in a given path of imgs
             if report_rrs:
                 print('Fetching Aerosol-443nm data..')
-                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Aerosol'], roi_vector, prefix='Aerosol', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
+                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Aerosol'], roi_vector, prefix='Aerosol', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
 
                 print('Fetching Blue-490nm data..')
-                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Blue'], roi_vector, prefix='Blue', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
+                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Blue'], roi_vector, prefix='Blue', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
 
                 print('Fetching Green-560nm data..')
-                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Green'], roi_vector, prefix='Green', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
+                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Green'], roi_vector, prefix='Green', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
 
                 print('Fetching Red-665nm data..')
-                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Red'], roi_vector, prefix='Red', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
+                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Red'], roi_vector, prefix='Red', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
 
                 print('Fetching RedEdge1-705nm data..')
-                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['RedEdge1'], roi_vector, prefix='RedEdge1', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
+                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['RedEdge1'], roi_vector, prefix='RedEdge1', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
 
                 print('Fetching RedEdge2-740nm data..')
-                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['RedEdge2'], roi_vector, prefix='RedEdge2', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
+                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['RedEdge2'], roi_vector, prefix='RedEdge2', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
 
                 print('Fetching RedEdge3-783nm data..')
-                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['RedEdge3'], roi_vector, prefix='RedEdge3', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
+                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['RedEdge3'], roi_vector, prefix='RedEdge3', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
 
                 print('Fetching Nir2-865nm data..')
-                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Nir2'], roi_vector, prefix='Nir2', scale_factor=10000)) for key in itermediary_batch_dict.keys()]
+                _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Nir2'], roi_vector, prefix='Nir2', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
 
             print('Fetching SPM L2B data..')
-            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['HySPM'], roi_vector, prefix='HySPM')) for key in itermediary_batch_dict.keys()]
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['HySPM'], roi_vector, prefix='HySPM', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
             print('Done.')
 
             print('Fetching Turbidity L2B data..')
-            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Turb'], roi_vector, prefix='Turb')) for key in itermediary_batch_dict.keys()]
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Turb'], roi_vector, prefix='Turb', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
             print('Done.')
 
             print('Fetching Chl-a L2B data..')
-            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Chla'], roi_vector, prefix='Chla')) for key in itermediary_batch_dict.keys()]
+            _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Chla'], roi_vector, prefix='Chla', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
             print('Done.')
 
             print('Fetching L2B pixel metadata..')
