@@ -49,7 +49,35 @@ class Methods:
     """
 
     def __init__(self):
-        pass
+        self.reset_numerical_diagnostics()
+
+    def reset_numerical_diagnostics(self):
+        self._numerical_diagnostics = {
+            "algorithm_evaluations": 0,
+            "missing_or_masked_input": 0,
+            "zero_denominator": 0,
+            "nonpositive_log_argument": 0,
+            "invalid_fractional_power_base": 0,
+            "invalid_square_root_radicand": 0,
+            "numerical_calculation_overflow": 0,
+            "algorithm_limit_rejection": 0,
+            "zero_blend_support": 0,
+            "operations": {},
+        }
+
+    def _record_numerical_diagnostics(self, operation, diagnostics):
+        operation_totals = self._numerical_diagnostics["operations"].setdefault(operation, {})
+        for key, value in diagnostics.items():
+            if not isinstance(value, (int, float, np.integer, np.floating)):
+                continue
+            operation_totals[key] = operation_totals.get(key, 0) + int(value)
+            if key in self._numerical_diagnostics:
+                self._numerical_diagnostics[key] += int(value)
+
+    def _evaluate_formula(self, function, operation, **kwargs):
+        values, diagnostics = function(return_diagnostics=True, **kwargs)
+        self._record_numerical_diagnostics(operation, diagnostics)
+        return values
 
     @staticmethod
     def safe_divide(num, den):
@@ -70,7 +98,7 @@ class Methods:
         x = np.asarray(x, dtype=float)
         x = np.where(x > 0, x, np.nan)
         return np.log10(x)
-    
+
     @staticmethod
     def shp_stats(tif_file, shp_poly, keep_spatial=False, statistics='count min mean max median std'):
         """
@@ -150,7 +178,7 @@ class Methods:
             'roi_features': len(roi_stats),
             'roi_features_with_data': len(populated),
         }
-    
+
     @staticmethod
     def extract_px(rasterio_rast, shapefile, rrs_dict, bands):
         """
@@ -180,7 +208,7 @@ class Methods:
             values.append(subset_data.where(~mask_image).values.flatten())
 
         return values, slices, mask_image
-    
+
     @staticmethod
     def sample_grs_with_shp(grs_nc, vector_shp, grs_version='v20', unique_shp_key='id'):
         '''
@@ -230,7 +258,12 @@ class Methods:
         counter = 0
         print(f'Processing {len(tasks)} tasks...')
         # Compute all delayed dask-tasks
-        results = compute(*tasks)
+        try:
+            results = compute(*tasks)
+        finally:
+            if GRS.grs_dict is not None:
+                GRS.grs_dict.close()
+                GRS.grs_dict = None
         print(f' {counter}')
         print('Done.')
 
@@ -329,7 +362,7 @@ class Methods:
         if low_rrs:
             # Compute the maximum value across all bands and create a mask
             stacked = xr.concat([rrs_dict[var] for var in low_rrs_bands], dim='variable')
-            max_values = stacked.max(dim='variable')
+            max_values = stacked.fillna(-np.inf).max(dim='variable')
             mask = max_values >= low_rrs_thresh
             n_neg = len(np.where(np.isnan(rrs_dict['Red'].values) == False)[0]) - len(np.where(mask)[0])
             self.lowrrs = n_neg
@@ -635,7 +668,7 @@ class Methods:
         @chla: an array, with the same size as the input bands, with the modeled values
         """
         import getpak.inversion_functions as ifunc
-        chla = np.zeros(rrs_dict['Red'].shape, dtype='float32')
+        chla = np.full(rrs_dict['Red'].shape, np.nan, dtype=float)
 
         if alg == 'owt':
             # chla functions for each OWT
@@ -654,13 +687,13 @@ class Methods:
             classes = [1, 6, 10]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_gons(Red=rrs_dict['Red'].values[index],
-                                             RedEdge1=rrs_dict['RedEdge1'].values[index],
-                                             RedEdge3=rrs_dict['RedEdge3'].values[index],
-                                             aw665=0.425, aw708=0.704)
+                chla[index] = self._evaluate_formula(ifunc.chl_gons, 'chl_gons',
+                    Red=rrs_dict['Red'].values[index], RedEdge1=rrs_dict['RedEdge1'].values[index],
+                    RedEdge3=rrs_dict['RedEdge3'].values[index], aw665=0.425, aw708=0.704)
                 if limits:
                     lims = [1, 250]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                     chla[index[0][out], index[1][out]] = np.nan
 
             classes = [2, 4, 5, 11, 12]
@@ -671,6 +704,7 @@ class Methods:
                 if limits:
                     lims = [2.5, 250]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                     chla[index[0][out], index[1][out]] = np.nan
 
             # for class 2 and 12, when values of NDCI are >20, use Gilerson instead
@@ -678,21 +712,23 @@ class Methods:
             conditions = (np.isin(class_owt_spt, classes)) & (chla > 20)
             index = np.where(conditions)
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
-                                                  RedEdge1=rrs_dict['RedEdge1'].values[index])
+                chla[index] = self._evaluate_formula(ifunc.chl_gilerson2, 'chl_gilerson2',
+                    Red=rrs_dict['Red'].values[index], RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
                     lims = [2.5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                     chla[index[0][out], index[1][out]] = np.nan
 
             classes = [7, 8]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values[index],
-                                                  RedEdge1=rrs_dict['RedEdge1'].values[index])
+                chla[index] = self._evaluate_formula(ifunc.chl_gilerson2, 'chl_gilerson2',
+                    Red=rrs_dict['Red'].values[index], RedEdge1=rrs_dict['RedEdge1'].values[index])
                 if limits:
                     lims = [2.5, 500]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                     chla[index[0][out], index[1][out]] = np.nan
 
             # classes = []
@@ -709,51 +745,58 @@ class Methods:
             classes = [3]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values[index],
-                                            Green=rrs_dict['Green'].values[index], a=0.1098, b=-0.755, c=-14.12,
-                                            d=-117, e=-17.76)
+                chla[index] = self._evaluate_formula(ifunc.chl_OC2, 'chl_OC2_owt3',
+                    Blue=rrs_dict['Blue'].values[index], Green=rrs_dict['Green'].values[index],
+                    a=0.1098, b=-0.755, c=-14.12, d=-117, e=-17.76)
                 if limits:
                     lims = [0.01, 50]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                     chla[index[0][out], index[1][out]] = np.nan
 
             classes = [9]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values[index],
-                                            Green=rrs_dict['Green'].values[index], a=0.0536, b=7.308, c=116.2,
-                                            d=412.4, e=463.5)
+                chla[index] = self._evaluate_formula(ifunc.chl_OC2, 'chl_OC2_owt9',
+                    Blue=rrs_dict['Blue'].values[index], Green=rrs_dict['Green'].values[index],
+                    a=0.0536, b=7.308, c=116.2, d=412.4, e=463.5)
                 if limits:
                     lims = [0.01, 50]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                     chla[index[0][out], index[1][out]] = np.nan
 
             classes = [13]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values[index],
-                                            Green=rrs_dict['Green'].values[index], a=-5020, b=2.9e+04, c=-6.1e+04,
-                                            d=5.749e+04, e=-2.026e+04)
+                chla[index] = self._evaluate_formula(ifunc.chl_OC2, 'chl_OC2_owt13',
+                    Blue=rrs_dict['Blue'].values[index], Green=rrs_dict['Green'].values[index],
+                    a=-5020, b=2.9e+04, c=-6.1e+04, d=5.749e+04, e=-2.026e+04)
                 if limits:
                     lims = [0.01, 50]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                     chla[index[0][out], index[1][out]] = np.nan
 
             classes = [14]
             index = np.where(np.isin(class_owt_spt, classes))
             if len(index[0] > 0):
-                chla[index] = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values[index],
-                                            Green=rrs_dict['Green'].values[index])
+                chla[index] = self._evaluate_formula(ifunc.chl_OC2, 'chl_OC2_owt14',
+                    Blue=rrs_dict['Blue'].values[index],
+                    Green=rrs_dict['Green'].values[index])
                 if limits:
                     lims = [0.01, 50]
                     out = np.where((chla[index] < lims[0]) | (chla[index] > lims[1]))
+                    self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                     chla[index[0][out], index[1][out]] = np.nan
 
         elif alg == 'gilerson2':
-            chla = ifunc.chl_gilerson2(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
+            chla = self._evaluate_formula(ifunc.chl_gilerson2, 'chl_gilerson2',
+                Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values)
             if limits:
                 lims = [2.5, 500]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 chla[out] = np.nan
 
         elif alg == 'gilerson3':
@@ -765,14 +808,17 @@ class Methods:
             if limits:
                 lims = [10, 2000]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 chla[out] = np.nan
 
         elif alg == 'gons':
-            chla = ifunc.chl_gons(Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values,
-                                  RedEdge3=rrs_dict['RedEdge3'].values)
+            chla = self._evaluate_formula(ifunc.chl_gons, 'chl_gons',
+                Red=rrs_dict['Red'].values, RedEdge1=rrs_dict['RedEdge1'].values,
+                RedEdge3=rrs_dict['RedEdge3'].values)
             if limits:
                 lims = [1, 250]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 chla[out] = np.nan
 
         elif alg == 'gurlin':
@@ -780,6 +826,7 @@ class Methods:
             if limits:
                 lims = [10, 1000]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 chla[out] = np.nan
 
         elif alg == 'ndci':
@@ -787,18 +834,19 @@ class Methods:
             if limits:
                 lims = [2.5, 250]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 chla[out] = np.nan
 
         elif alg == 'oc2':
-            chla = ifunc.chl_OC2(Blue=rrs_dict['Blue'].values, Green=rrs_dict['Green'].values)
+            chla = self._evaluate_formula(ifunc.chl_OC2, 'chl_OC2',
+                Blue=rrs_dict['Blue'].values, Green=rrs_dict['Green'].values)
             if limits:
                 lims = [0.01, 50]
                 out = np.where((chla < lims[0]) | (chla > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 chla[out] = np.nan
 
-        # removing espurious values and zeros
-        out = np.where((chla == 0) | np.isinf(chla))
-        chla[out] = np.nan
+        chla[~np.isfinite(chla)] = np.nan
 
         return chla
 
@@ -821,7 +869,7 @@ class Methods:
 
         if isinstance(owt_classes, np.ndarray) and len(owt_classes.shape) == 3:
             # calculating chla for each
-            aux_chla = np.zeros((owt_classes.shape[0], *rrs_dict['Red'].shape), dtype='float32')
+            aux_chla = np.full((owt_classes.shape[0], *rrs_dict['Red'].shape), np.nan, dtype=float)
             for i in range(0, owt_classes.shape[0]):
                 aux_chla[i, :, :] = Methods.chlorophylla(self, rrs_dict, owt_classes[i, :, :], limits=True, alg='owt')
 
@@ -831,21 +879,27 @@ class Methods:
                     over = np.where((np.absolute(aux_chla[i, :, :] - aux_chla[0, :, :]) > (4 * aux_chla[0, :, :])))
                     aux_chla[i, over[0], over[1]] = 0
 
-            # inserting weights = 0
+            # Invalid algorithm results have no blend support; they do not represent
+            # a valid zero concentration.
             for i in range(0, owt_classes.shape[0]):
-                owt_weights[i, np.where(np.isnan(aux_chla[i, :, :]))[0], np.where(np.isnan(aux_chla[i, :, :]))[1]] = 0
-                aux_chla[i, np.where(np.isnan(aux_chla[i, :, :]))[0], np.where(np.isnan(aux_chla[i, :, :]))[1]] = 0
+                invalid = ~np.isfinite(aux_chla[i, :, :])
+                owt_weights[i, invalid] = 0
+                aux_chla[i, invalid] = 0
 
-            # calculating the blended product
-            num = np.zeros(rrs_dict['Red'].shape, dtype='float32')
-            den = np.zeros(rrs_dict['Red'].shape, dtype='float32')
+            num = np.zeros(rrs_dict['Red'].shape, dtype=float)
+            den = np.zeros(rrs_dict['Red'].shape, dtype=float)
             for i in range(0, owt_classes.shape[0]):
                 num = num + (owt_weights[i, :, :] * aux_chla[i, :, :])
                 den = den + owt_weights[i, :, :]
-            chla = num / den
-
-            # changing from np.nan to 0:
-            chla[np.where(np.isnan(chla))] = 0
+            chla = np.full(rrs_dict['Red'].shape, np.nan, dtype=float)
+            blend_valid = np.isfinite(den) & (den != 0)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                np.divide(num, den, out=chla, where=blend_valid)
+            self._record_numerical_diagnostics('chla_blend', {
+                'algorithm_evaluations': int(chla.size),
+                'zero_blend_support': int(np.count_nonzero(~blend_valid)),
+                'finite_output_count': int(np.count_nonzero(np.isfinite(chla))),
+            })
 
         elif isinstance(owt_classes, np.ndarray) and len(owt_classes.shape) == 3:
             print('There is only one class of OWT classes, use function chlorophylla instead.')
@@ -892,7 +946,7 @@ class Methods:
         turb: an array, with the same size as the input bands, with the modeled values
         """
         import getpak.inversion_functions as ifunc
-        turb = np.zeros(rrs_dict['Red'].shape, dtype='float32')
+        turb = np.full(rrs_dict['Red'].shape, np.nan, dtype=float)
 
         if alg == 'owt':
             # turb functions for each OWT
@@ -902,25 +956,27 @@ class Methods:
                 classes = [1]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    turb[index] = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Aerosol'].values[index],
+                    turb[index] = self._evaluate_formula(ifunc.spm_jiang2021_green, 'spm_jiang2021_green', Aerosol=rrs_dict['Aerosol'].values[index],
                                                             Blue=rrs_dict['Blue'].values[index],
                                                             Green=rrs_dict['Green'].values[index],
                                                             Red=rrs_dict['Red'].values[index])
                     if limits:
                         lims = [0, 50]
                         out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
+                        self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                         turb[index[0][out], index[1][out]] = np.nan
 
                 classes = [2]
                 index = np.where(np.isin(class_owt_spt, classes))
                 if len(index[0] > 0):
-                    turb[index] = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Aerosol'].values[index],
+                    turb[index] = self._evaluate_formula(ifunc.spm_jiang2021_red, 'spm_jiang2021_red', Aerosol=rrs_dict['Aerosol'].values[index],
                                                           Blue=rrs_dict['Blue'].values[index],
                                                           Green=rrs_dict['Green'].values[index],
                                                           Red=rrs_dict['Red'].values[index])
                     if limits:
                         lims = [10, 500]
                         out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
+                        self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                         turb[index[0][out], index[1][out]] = np.nan
 
                 classes = [3]
@@ -931,6 +987,7 @@ class Methods:
                     if limits:
                         lims = [20, 1000]
                         out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
+                        self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                         turb[index[0][out], index[1][out]] = np.nan
 
                 classes = [4]
@@ -941,62 +998,77 @@ class Methods:
                     if limits:
                         lims = [50, 2000]
                         out = np.where((turb[index] < lims[0]) | (turb[index] > lims[1]))
+                        self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                         turb[index[0][out], index[1][out]] = np.nan
 
         elif alg == 'Hybrid':
-            turb = ifunc.spm_s3(Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
+            turb = self._evaluate_formula(ifunc.spm_s3, 'spm_s3', Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
             if limits:
                 lims = [0.001, 3000]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
+
 
         elif alg == 'Nechad':
             turb = ifunc.spm_nechad(Red=rrs_dict['Red'].values)
             if limits:
                 lims = [0.1, 1000]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
+
 
         elif alg == 'NechadGreen':
             turb = ifunc.spm_nechad(Red=rrs_dict['Green'].values, a=228.72, c=0.2200)
             if limits:
                 lims = [0.1, 200]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
+
 
         elif alg == 'Binding':
             turb = ifunc.spm_binding2010(RedEdge2=rrs_dict['RedEdge2'].values)
             if limits:
                 lims = [0.1, 2000]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
+
 
         elif alg == 'Zhang':
             turb = ifunc.spm_zhang2014(RedEdge1=rrs_dict['RedEdge1'].values)
             if limits:
                 lims = [0.1, 1000]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
 
+
         elif alg == 'Jiang_Green':
-            turb = ifunc.spm_jiang2021_green(Aerosol=rrs_dict['Aerosol'].values,
+            turb = self._evaluate_formula(ifunc.spm_jiang2021_green, 'spm_jiang2021_green', Aerosol=rrs_dict['Aerosol'].values,
                                              Blue=rrs_dict['Blue'].values,
                                              Green=rrs_dict['Green'].values,
                                              Red=rrs_dict['Red'].values)
             if limits:
                 lims = [0.1, 100]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
 
+
         elif alg == 'Jiang_Red':
-            turb = ifunc.spm_jiang2021_red(Aerosol=rrs_dict['Aerosol'].values,
+            turb = self._evaluate_formula(ifunc.spm_jiang2021_red, 'spm_jiang2021_red', Aerosol=rrs_dict['Aerosol'].values,
                                            Blue=rrs_dict['Blue'].values,
                                            Green=rrs_dict['Green'].values,
                                            Red=rrs_dict['Red'].values)
             if limits:
                 lims = [0.1, 500]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
+
 
         elif alg == 'Dogliotti':
             turb = ifunc.spm_dogliotti_S2(Red=rrs_dict['Red'].values,
@@ -1004,23 +1076,29 @@ class Methods:
             if limits:
                 lims = [0.1, 1000]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
+
 
         elif alg == 'Conde':
             turb = ifunc.spm_conde(Red=rrs_dict['Red'].values)
             if limits:
                 lims = [0.1, 100]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
+
 
         elif alg == 'Madeira':
             turb = ifunc.spm_madeira(Red=rrs_dict['Red'].values, Nir2=rrs_dict['Nir2'].values)
             if limits:
                 lims = [0.1, 2000]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
 
-        
+
+
 
         elif alg == 'Jiang':
             if mode_Jiang == 'pixel':
@@ -1051,11 +1129,11 @@ class Methods:
             if limits:
                 lims = [0.1, 1000]
                 out = np.where((turb < lims[0]) | (turb > lims[1]))
+                self._numerical_diagnostics["algorithm_limit_rejection"] += int(len(out[0]))
                 turb[out] = np.nan
 
-        # removing espurious values and zeros
-        out = np.where((turb == 0) | np.isinf(turb))
-        turb[out] = np.nan
+
+        turb[~np.isfinite(turb)] = np.nan
 
         return turb
 
@@ -1257,7 +1335,7 @@ class Methods:
                     dates.append(date2)
 
         print(f'Found {len(dates)} match-ups\n')
-        
+
         return matches, str_matches, dates
 
     @staticmethod
@@ -1300,7 +1378,7 @@ class Methods:
                         shutil.copyfile(f, dest_plus_name)
                         # print(f'COPYING: {f} TO: {dest_plus_name}\n')
                         # appending the date and path
-                        nome = f.parent.parent.name.split('_')  
+                        nome = f.parent.parent.name.split('_')
                         # check because for MAJA the dates are in position 2,
                         #  while for other products it is 3
                         date = nome[1][0:8] if nome[1][0] == '2' else nome[2][0:8]
@@ -1355,7 +1433,7 @@ class Methods:
     # def intersect_watermask(rrs_dict, water_mask_dir):
     #     """
     #     Find all invalid masks from WaterDetect in a folder, get their dates,
-    #     and copy them to a new folder with a new name. Also writes the path 
+    #     and copy them to a new folder with a new name. Also writes the path
     #     of the water masks for each date
 
     #     Parameters
@@ -1382,7 +1460,7 @@ class Methods:
     #         sys.exit(1)
 
     #     return img
-    
+
     @staticmethod
     def intersect_watermask(rrs_dict, water_mask_dir, require_full_coverage=False,
                             return_status=False):
@@ -1442,6 +1520,6 @@ class Methods:
         if img['Red'].notnull().any().compute() == False:
             print("Water mask does not cover any valid Rrs pixels.")
             return (None, 'empty_mask') if return_status else None
-        
+
         print("Done.")
         return (img, 'matched') if return_status else img

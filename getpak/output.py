@@ -275,9 +275,9 @@ class Raster:
             slices = window_image.toslices()
             values = data_matrix[slices[0], slices[1]][~mask_image]
             # Verifying if there are enough pixels to calculate
-            valid_pixels = np.isnan(values) == False
+            valid_pixels = np.isfinite(values)
             if np.count_nonzero(valid_pixels) >= min_px:
-                values_shp[i] = calc(values)
+                values_shp[i] = calc(values[valid_pixels])
             else:
                 values_shp[i] = np.nan
 

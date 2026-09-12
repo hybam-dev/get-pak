@@ -350,57 +350,89 @@ class GRS:
         @return grs: xarray.DataArray containing 11 Rrs bands.
         The band names can be found at getpak.commons.DefaultDicts.grs_v20nc_s2bands
         """
-        # client = self.client()
-        meta = GRS.metadata(grs_nc_file)
-        # list of bands
-        bands = dd.grs_v20nc_s2bands
-        # self.log.info(f'Opening GRS version {grs_version} file {grs_nc_file}')
-        if grs_version == 'v15':
-            ds = xr.open_dataset(grs_nc_file, engine="h5netcdf", decode_coords='all', chunks={'y': -1, 'x': -1})
-            trans = ds.rio.transform()
-            proj = rasterio.crs.CRS.from_wkt(ds['spatial_ref'].attrs.get('crs_wkt'))
-            # List of variables to keep
-            if 'Rrs_B1' in ds.variables:
-                variables_to_keep = bands
-                # Drop the variables you don't want
-                variables_to_drop = [var for var in ds.variables if var not in variables_to_keep]
-                grs = ds.drop_vars(variables_to_drop)
-                transform_source = "rioxarray dataset transform"
-        elif grs_version == 'v20':
-            # first getting transform using gdal
-            ds = gdal.Open(f'NETCDF:{grs_nc_file}:Rrs')
-            gt = ds.GetGeoTransform()
-            trans = Affine(gt[1], gt[2], gt[0], gt[4], gt[5], gt[3])
-            ds = None
-            # Now opening using xarray
-            ds = xr.open_dataset(grs_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf")
-            proj = rasterio.crs.CRS.from_wkt(ds['spatial_ref'].attrs.get('crs_wkt'))
-            subset_dict = {band: ds['Rrs'].sel(wl=wave).drop_vars(['wl', 'time']) for band, wave in bands.items()}
-            grs = xr.Dataset(subset_dict)
-            transform_source = "GDAL Rrs subdataset GeoTransform"
-        elif grs_version == 'v21':
-            ds = xr.open_dataset(grs_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf")
-            trans = ds.rio.transform()
-            proj = rasterio.crs.CRS.from_wkt(ds['spatial_ref'].attrs.get('crs_wkt'))
-            subset_dict = {band: ds['Rrs'].sel(wl=wave).drop_vars(['wl', 'time', 'band', 'central_wavelength']) for
-                           band, wave in bands.items()}
-            grs = xr.Dataset(subset_dict)
-            transform_source = "rioxarray dataset transform"
-        else:
-            # self.log.error(f'GRS version {grs_version} not supported.')
-            grs = None
-            sys.exit(1)
+        source = None
+        source_closed = False
 
-        grs, trans, _ = GRS._validated_grid(
-            grs=grs,
-            proj=proj,
-            original_transform=trans,
-            transform_source=transform_source,
-        )
-        ds.close()
-        # grs = client.persist(grs)
-        return grs, meta, proj, trans
-    
+        def close_source():
+            nonlocal source_closed
+            if source_closed:
+                return
+            source_closed = True
+            if source is not None:
+                try:
+                    source.close()
+                except Exception:
+                    # Cleanup must never replace the original failure.
+                    pass
+
+        try:
+            meta = GRS.metadata(grs_nc_file)
+            bands = dd.grs_v20nc_s2bands
+            if grs_version == 'v15':
+                source = xr.open_dataset(
+                    grs_nc_file, engine="h5netcdf", decode_coords='all',
+                    chunks={'y': -1, 'x': -1},
+                )
+                trans = source.rio.transform()
+                proj = rasterio.crs.CRS.from_wkt(
+                    source['spatial_ref'].attrs.get('crs_wkt')
+                )
+                if 'Rrs_B1' not in source.variables:
+                    raise ValueError("GRS v15 input is missing Rrs_B1.")
+                variables_to_drop = [
+                    var for var in source.variables if var not in bands
+                ]
+                grs = source.drop_vars(variables_to_drop)
+                transform_source = "rioxarray dataset transform"
+            elif grs_version == 'v20':
+                gdal_source = gdal.Open(f"NETCDF:{grs_nc_file}:Rrs")
+                try:
+                    gt = gdal_source.GetGeoTransform()
+                finally:
+                    gdal_source = None
+                trans = Affine(gt[1], gt[2], gt[0], gt[4], gt[5], gt[3])
+                source = xr.open_dataset(
+                    grs_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf"
+                )
+                proj = rasterio.crs.CRS.from_wkt(
+                    source['spatial_ref'].attrs.get('crs_wkt')
+                )
+                subset_dict = {
+                    band: source['Rrs'].sel(wl=wave).drop_vars(['wl', 'time'])
+                    for band, wave in bands.items()
+                }
+                grs = xr.Dataset(subset_dict)
+                transform_source = "GDAL Rrs subdataset GeoTransform"
+            elif grs_version == 'v21':
+                source = xr.open_dataset(
+                    grs_nc_file, chunks={'y': -1, 'x': -1}, engine="h5netcdf"
+                )
+                trans = source.rio.transform()
+                proj = rasterio.crs.CRS.from_wkt(
+                    source['spatial_ref'].attrs.get('crs_wkt')
+                )
+                subset_dict = {
+                    band: source['Rrs'].sel(wl=wave).drop_vars(
+                        ['wl', 'time', 'band', 'central_wavelength']
+                    )
+                    for band, wave in bands.items()
+                }
+                grs = xr.Dataset(subset_dict)
+                transform_source = "rioxarray dataset transform"
+            else:
+                raise ValueError(f"Unsupported GRS version: {grs_version!r}.")
+
+            grs, trans, _ = GRS._validated_grid(
+                grs=grs, proj=proj, original_transform=trans,
+                transform_source=transform_source,
+            )
+            # Transfer source ownership to the lazy derived dataset.
+            grs.set_close(close_source)
+            return grs, meta, proj, trans
+        except Exception:
+            close_source()
+            raise
+
     @staticmethod
     def _get_shp_features(shp_file, unique_key='id', grs_crs='EPSG:32720'):
         '''

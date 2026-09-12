@@ -263,12 +263,18 @@ class Pipelines:
         versions = {'python': platform.python_version()}
         for distribution in (
             'getpak', 'numpy', 'pandas', 'xarray', 'dask', 'rasterio',
+            "h5py", "h5netcdf",
             'rioxarray', 'rasterstats', 'GDAL', 'scikit-learn',
         ):
             try:
                 versions[distribution] = package_metadata.version(distribution)
             except package_metadata.PackageNotFoundError:
                 versions[distribution] = 'not-installed'
+        try:
+            import h5py
+            versions["HDF5"] = h5py.version.hdf5_version
+        except ImportError:
+            versions["HDF5"] = "not-installed"
         return versions
 
     @staticmethod
@@ -754,7 +760,18 @@ class Pipelines:
                 results[key].update({'Nir2': 'empty'})     # 865
 
             rrs_source = None
+            grs = None
+
+            def close_scene_sources():
+                for dataset in (grs, rrs_source):
+                    if dataset is not None:
+                        try:
+                            dataset.close()
+                        except Exception:
+                            pass
+
             try:
+                m.reset_numerical_diagnostics()
                 read_start = time.perf_counter()
                 grs_ver = self.grs_file_version
                 version_message = f" using grs_version={grs_ver}" if grs_ver else ""
@@ -849,7 +866,7 @@ class Pipelines:
                     # mask for OWT 14
                     bands = ['Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1', 'RedEdge2']
                     stacked = xr.concat([grs[var] for var in bands], dim='variable')
-                    max_values = stacked.max(dim='variable')
+                    max_values = stacked.fillna(-np.inf).max(dim='variable')
                     mask = max_values < 0.005
                     # first checking if there are any pixels in the mask
                     if np.where(mask.values)[0].size > 0:
@@ -915,7 +932,6 @@ class Pipelines:
                     chla[np.where(owt_classes[0,:,:]==1)] = np.nan
                     turb[np.where(owt_classes[0,:,:]==1)] = np.nan
                     hyspm[np.where(owt_classes[0,:,:]==1)] = np.nan
-                    
                     scene_timing['valid_water_pixels'] = int(
                         np.count_nonzero(np.isfinite(red))
                     )
@@ -962,9 +978,6 @@ class Pipelines:
                     )
                
                 stacked = None
-                grs.close()
-                rrs_source.close()
-                rrs_source = None
                 results[key]['status'] = 'success'
                 ledger_entry['status'] = 'success'
                 ledger_entry['reason'] = None
@@ -976,9 +989,6 @@ class Pipelines:
                 t_hour, t_min, t_sec,_ = u.tac()
                 print(f'Done processing: {n+1}/{tot} - {key} \nExecution time: {t_hour}h : {t_min}m : {t_sec}s')
             except Exception as e:
-                if rrs_source is not None:
-                    rrs_source.close()
-                    rrs_source = None
                 print(f'Error processing {key}: {e}')
                 results[key]['status'] = 'error'
                 results[key]['error'] = str(e)
@@ -992,6 +1002,11 @@ class Pipelines:
                 t_hour, t_min, t_sec,_ = u.tac()
                 print(f'Execution time: {t_hour}h : {t_min}m : {t_sec}s')
             finally:
+                close_scene_sources()
+                if hasattr(m, '_numerical_diagnostics'):
+                    numerical_diagnostics = json.loads(json.dumps(m._numerical_diagnostics))
+                    ledger_entry['numerical_diagnostics'] = numerical_diagnostics
+                    results[key]['numerical_diagnostics'] = numerical_diagnostics
                 scene_timing['stages_s']['total'] = time.perf_counter() - scene_start
                 scene_timing['status'] = ledger_entry['status']
                 self.timing_manifest['scenes'][key] = scene_timing
