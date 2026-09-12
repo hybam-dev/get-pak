@@ -138,3 +138,106 @@ def test_underscore_product_discovery(tmp_path, monkeypatch):
     output.write_bytes(b"fixture")
     found = pipeline.match_file_uid(root, "20210911T025551_T50RKU_record")
     assert found["example_equation_01"] == str(output)
+
+
+
+def test_generic_evaluator_uses_only_required_bands_and_preserves_zero():
+    def green_only(Green):
+        return 100 * Green
+
+    def red_green_sum(Red, Green):
+        return Red + Green
+
+    def invalid_log(Green):
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.log(Green)
+
+    common = {
+        "equation_version": "test",
+        "encoding": {"profile": "custom-float32"},
+    }
+    green_spec = ce.CustomEquationSpec(
+        identifier="test_green_only", function=green_only,
+        required_bands=("Green",), coefficients={}, units="demo",
+        description="test", **common,
+    )
+    values, diagnostics = ce.evaluate(
+        green_spec,
+        {"Green": np.array([0.01, 0.0]), "Red": [[1.0], [2.0, 3.0]]},
+        {},
+    )
+    np.testing.assert_allclose(values, [1.0, 0.0])
+    assert diagnostics["status"] == "success"
+
+    sum_spec = ce.CustomEquationSpec(
+        identifier="test_red_green_sum", function=red_green_sum,
+        required_bands=("Red", "Green"), coefficients={}, units="demo",
+        description="test", **common,
+    )
+    values, diagnostics = ce.evaluate(
+        sum_spec, {"Red": np.array([0.0, 0.0]), "Green": np.array([0.02, 0.03])}, {},
+    )
+    np.testing.assert_allclose(values, [0.02, 0.03])
+    assert diagnostics["zero_denominator"] == 0
+
+    log_spec = ce.CustomEquationSpec(
+        identifier="test_log", function=invalid_log,
+        required_bands=("Green",), coefficients={}, units="demo",
+        description="test", **common,
+    )
+    values, diagnostics = ce.evaluate(log_spec, {"Green": np.array([-1.0, 1.0])}, {})
+    assert np.isnan(values[0]) and values[1] == 0
+    assert diagnostics["undefined_count"] == 1
+    assert diagnostics["float32_overflow_count"] == 0
+
+
+def test_fingerprint_changes_for_helper_and_contract_changes(monkeypatch):
+    spec = ce.CUSTOM_EQUATION_REGISTRY["example_equation_01"]
+    before = spec.implementation_fingerprint
+
+    def changed_helper(red_edge, red):
+        return ce._safe_ratio(red_edge, red) * 2
+
+    monkeypatch.setattr(ce, "_safe_ratio", changed_helper)
+    assert spec.implementation_fingerprint != before
+
+    changed_units = ce.CustomEquationSpec(
+        identifier=spec.identifier, function=spec.function,
+        required_bands=spec.required_bands, coefficients=spec.coefficients,
+        units="changed-unit", description=spec.description,
+        equation_version=spec.equation_version, encoding=spec.encoding,
+    )
+    assert changed_units.implementation_fingerprint != before
+
+
+def test_custom_float32_writer_preserves_values_and_omits_integer_contract(tmp_path, monkeypatch):
+    config = {
+        "client_folder": {
+            "inputs": str(tmp_path), "output": str(tmp_path / "out"),
+            "wmask_folder": str(tmp_path),
+        },
+        "processing": {"s2_tile": "50RKU", "ac_processor": "GRS", "grs_version": "v20"},
+        "timeseries": {"l2b_algorithms": "[]"}, "roi_vectors": [],
+    }
+    monkeypatch.setattr("getpak.automation.u.read_config", lambda config_path=None: config)
+    pipeline = Pipelines()
+    pipeline.ledger_by_uid = {"scene": {
+        "scene_uid": "scene", "record_id": "record", "processor": "GRS",
+        "processor_version": "v20", "tile": "50RKU",
+        "acquisition_datetime_utc": "2021-09-11 02:55:51",
+    }}
+    spec = ce.CUSTOM_EQUATION_REGISTRY["example_equation_01"]
+    target_dir = Path(config["client_folder"]["output"]) / "50RKU" / spec.identifier
+    target_dir.mkdir(parents=True)
+    target, _ = pipeline._write_custom_raster(
+        np.array([[-2.5, 0.0], [70000.0, np.nan]]), spec, {}, "scene",
+        transform=Affine(20, 0, 1000, 0, -20, 1040), projection="EPSG:4326",
+    )
+    with rasterio.open(target) as source:
+        np.testing.assert_allclose(source.read(1)[0, :], [-2.5, 0.0])
+        assert source.read(1)[1, 0] == pytest.approx(70000.0)
+        tags = source.tags()
+    assert tags["PHYSICAL_UNIT"] == "1"
+    assert tags["RASTER_SCALE"] == "1.0"
+    assert "RESOLUTION" not in tags
+    assert "MAXIMUM_PHYSICAL_VALUE" not in tags

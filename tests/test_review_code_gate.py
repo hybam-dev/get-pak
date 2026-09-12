@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import openpyxl
 import pytest
 import rasterio
 import xarray as xr
@@ -323,7 +324,7 @@ def test_report_without_rrs_and_with_missing_rasters_is_nonfatal(
 
 def test_missing_product_parser_is_explicit():
     parsed = Pipelines._parse_tifs(None, 'roi.shp', prefix='Chla')
-    assert parsed['Chla_status'] == 'missing_product'
+    assert parsed['Chla_status'] == 'missing raster'
     assert parsed['Chla_count'] is None
 
 
@@ -446,3 +447,49 @@ def test_conflicting_static_mask_aliases_fail(monkeypatch, tmp_path):
     config["processing"].update(mask_mode="static", static_mask="old.tif", static_mask_path="new.tif")
     with pytest.raises(ValueError, match="conflicts"):
         _ = pipeline.static_mask
+
+
+
+def test_report_handles_missing_standard_raster_and_mixed_custom_rows(monkeypatch, tmp_path):
+    pipeline, cfg = make_pipeline(monkeypatch, tmp_path, report_rrs=False)
+    cfg['roi_vectors'] = [str(tmp_path / 'roi.shp')]
+    root = tmp_path / 'output' / '20LLQ'
+    (root / 'npix').mkdir(parents=True)
+    (root / 'example_equation_01').mkdir(parents=True)
+    uid_a = '20240101T100000_T20LLQ_A'
+    (root / 'npix' / f'npixels_{uid_a}.txt').write_text('Water_pixels;4\n')
+    (root / 'example_equation_01' / f'example_equation_01_{uid_a}.tif').write_bytes(b'fixture')
+    pipeline._write_json(root / '20240101T100000_scene_ledger.json', [
+        {
+            'record_id': 'A', 'scene_uid': 'scene-A', 'tile': '20LLQ',
+            'processor': 'ACOLITE', 'processor_version': '1',
+            'acquisition_datetime_utc': '2024-01-01 10:00:00',
+        },
+        {
+            'record_id': 'B', 'scene_uid': 'scene-B', 'tile': '20LLQ',
+            'processor': 'ACOLITE', 'processor_version': '1',
+            'acquisition_datetime_utc': '2024-01-02 10:00:00',
+        },
+    ])
+
+    def fake_parse(path, shp_file, prefix='var', encoding_settings=None):
+        empty = {f'{prefix}_{name}': None for name in ('min', 'max', 'mean', 'count', 'std', 'median')}
+        if not path:
+            empty[f'{prefix}_status'] = 'missing raster'
+            return empty
+        empty.update({f'{prefix}_mean': 0.0, f'{prefix}_count': 1, f'{prefix}_status': 'success'})
+        return empty
+
+    monkeypatch.setattr(Pipelines, '_parse_tifs', staticmethod(fake_parse))
+    outputs = pipeline.build_report()
+    assert len(outputs) == 1
+    workbook = openpyxl.load_workbook(outputs[0])
+    water = workbook['Water quality']
+    headers = [cell.value for cell in water[1]]
+    rows = {water.cell(row, 1).value: row for row in range(2, water.max_row + 1)}
+    turb_status = water.cell(rows['A'], headers.index('Turb_status') + 1).value
+    assert turb_status == 'missing raster'
+    assert water.cell(rows['A'], headers.index('example_equation_01_mean') + 1).value == 0
+    assert water.cell(rows['B'], headers.index('example_equation_01_status') + 1).value == 'missing raster'
+    assert workbook['Water quality'].freeze_panes == 'C2'
+    assert workbook['Processing details'].freeze_panes == 'F2'

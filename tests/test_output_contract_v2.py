@@ -116,10 +116,11 @@ def test_excel_report_uses_acquisition_chronology(tmp_path):
         'later': {'record_id': 'later', 'acquisition_datetime_utc': '2021-09-12 02:00:00', 'acquisition_date': '2021-09-12', 'acquisition_time_utc': '02:00:00'},
         'earlier': {'record_id': 'earlier', 'acquisition_datetime_utc': '2021-09-11 02:00:00', 'acquisition_date': '2021-09-11', 'acquisition_time_utc': '02:00:00'},
     }, target)
-    frame = pd.read_excel(target)
+    frame = pd.read_excel(target, sheet_name='Water quality')
+    processing = pd.read_excel(target, sheet_name='Processing details')
     assert frame['record_id'].tolist() == ['earlier', 'later']
     assert pd.api.types.is_datetime64_any_dtype(frame['acquisition_datetime_utc'])
-    assert pd.api.types.is_datetime64_any_dtype(frame['acquisition_date'])
+    assert pd.api.types.is_datetime64_any_dtype(processing['acquisition_date'])
 
 
 def test_grs_processor_version_uses_configured_version_when_metadata_is_placeholder(tmp_path, monkeypatch):
@@ -211,7 +212,7 @@ def test_invalid_embedded_metadata_is_visible(tmp_path):
         dst.write(np.array([[100]], dtype="uint16"), 1)
         dst.update_tags(GETPAK_ENCODING_VERSION="GETPAK-ENC-2", STORED_MULTIPLIER="10", DECODE_MULTIPLIER="0.2")
     result = Pipelines._parse_tifs(target, "roi.shp", prefix="Turb", encoding_settings=_full_encoding_config())
-    assert result["Turb_status"] == "error"
+    assert result["Turb_status"] == "unreadable raster"
     assert "contradictory decode metadata" in result["Turb_error"]
 
 
@@ -243,14 +244,14 @@ def test_excel_report_has_two_sheets_and_leading_columns(tmp_path):
     workbook = openpyxl.load_workbook(target)
     assert workbook.sheetnames == ["Water quality", "Processing details"]
     assert workbook.active.title == "Water quality"
-    assert workbook["Water quality"].freeze_panes == "F2"
+    assert workbook["Water quality"].freeze_panes == "C2"
     assert workbook["Processing details"].freeze_panes == "F2"
     assert workbook["Water quality"].auto_filter.ref
+    water_leading = ["record_id", "acquisition_datetime_utc"]
     leading = ["record_id", "scene_uid", "acquisition_datetime_utc", "acquisition_date", "acquisition_time_utc"]
-    assert [cell.value for cell in workbook["Water quality"][1]][:5] == leading
+    assert [cell.value for cell in workbook["Water quality"][1]][:2] == water_leading
     assert [cell.value for cell in workbook["Processing details"][1]][:5] == leading
     assert workbook["Water quality"]["A2"].value == "earlier"
-    assert workbook["Water quality"]["F2"].value == 0
     assert workbook["Processing details"]["A2"].value == "earlier"
     assert workbook["Processing details"]["F1"].value == "source_path"
     water_headers = [cell.value for cell in workbook["Water quality"][1]]
@@ -267,6 +268,7 @@ def test_excel_report_has_two_sheets_and_leading_columns(tmp_path):
     assert workbook["Processing details"].cell(2, processing_headers.index("Chla_physical_unit") + 1).value == "mg m-3"
     assert workbook["Processing details"].cell(2, processing_headers.index("Chla_applied_multiplier") + 1).value == 100
     assert workbook["Processing details"].cell(2, processing_headers.index("Chla_decode_source") + 1).value == "settings_fallback"
+    assert workbook["Water quality"].cell(2, water_headers.index("Chla_mean") + 1).value == 0
     assert workbook["Water quality"].cell(2, water_headers.index("npix_status") + 1).value == "success"
     assert isinstance(workbook["Water quality"].cell(2, water_headers.index("npix_status") + 1).value, str)
 
@@ -339,7 +341,7 @@ def test_invalid_factor_and_nonzero_offset_are_errors(tmp_path):
                         STORED_MULTIPLIER="not-a-number")
     parsed = Pipelines._parse_tifs(invalid, "roi.shp", prefix="Turb",
                                    encoding_settings=_full_encoding_config())
-    assert parsed["Turb_status"] == "error"
+    assert parsed["Turb_status"] == "unreadable raster"
     assert "invalid STORED_MULTIPLIER" in parsed["Turb_error"]
 
     offset = tmp_path / "nonzero_offset.tif"
@@ -350,7 +352,7 @@ def test_invalid_factor_and_nonzero_offset_are_errors(tmp_path):
         dst.update_tags(ADD_OFFSET="1")
     parsed = Pipelines._parse_tifs(offset, "roi.shp", prefix="Turb",
                                    encoding_settings=_full_encoding_config())
-    assert parsed["Turb_status"] == "error"
+    assert parsed["Turb_status"] == "unreadable raster"
     assert "nonzero or invalid ADD_OFFSET" in parsed["Turb_error"]
 
 
@@ -364,7 +366,7 @@ def test_explicit_tiff_scale_and_offset_conflicts_are_visible(tmp_path):
         dst.update_tags(RASTER_SCALE="0.2")
     parsed = Pipelines._parse_tifs(scale_target, "roi.shp", prefix="Turb",
                                    encoding_settings=_full_encoding_config())
-    assert parsed["Turb_status"] == "error"
+    assert parsed["Turb_status"] == "unreadable raster"
     assert "conflicting explicit raster scale metadata" in parsed["Turb_error"]
 
     offset_target = tmp_path / "conflicting_offset.tif"
@@ -376,5 +378,5 @@ def test_explicit_tiff_scale_and_offset_conflicts_are_visible(tmp_path):
         dst.update_tags(ADD_OFFSET="0")
     parsed = Pipelines._parse_tifs(offset_target, "roi.shp", prefix="Turb",
                                    encoding_settings=_full_encoding_config())
-    assert parsed["Turb_status"] == "error"
+    assert parsed["Turb_status"] == "unreadable raster"
     assert "conflicting explicit offset metadata" in parsed["Turb_error"]

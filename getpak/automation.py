@@ -367,6 +367,11 @@ class Pipelines:
             raise ValueError(
                 f"Cannot write {product} for {scene_uid}: acquisition time is invalid."
             ) from exc
+        resolved_profile = (encoding_profile or self.encoding_settings['output_encoding']['encoding_profile'])
+        resolved_dtype = (dtype or self.encoding_settings['output_encoding'][
+            'categorical_dtype' if categorical else 'continuous_dtype'
+        ])
+        float32_contract = str(resolved_dtype).lower() == 'float32' or str(resolved_profile).lower() == 'custom-float32'
         metadata = {
             'product': product,
             'product_family': 'categorical' if categorical else 'continuous',
@@ -376,15 +381,15 @@ class Pipelines:
             'add_offset': 0.0,
             'nodata': (None if isinstance(nodata, (float, np.floating)) and np.isnan(nodata) else int(nodata)),
             'encoding_version': 'GETPAK-ENC-2',
-            'encoding_profile': (encoding_profile or self.encoding_settings['output_encoding']['encoding_profile']),
-            'dtype': (dtype or self.encoding_settings['output_encoding'][
-                'categorical_dtype' if categorical else 'continuous_dtype'
-            ]),
+            'encoding_profile': resolved_profile,
+            'dtype': resolved_dtype,
             'raster_scale': float(1.0 / stored_multiplier),
-            'resolution': float(1.0 / stored_multiplier),
+            'resolution': None if float32_contract else float(1.0 / stored_multiplier),
             'maximum_physical_value': (
-                maximum_physical_value if maximum_physical_value is not None else
-                (None if categorical else float(65534.0 / stored_multiplier))
+                None if float32_contract else (
+                    maximum_physical_value if maximum_physical_value is not None else
+                    (None if categorical else float(65534.0 / stored_multiplier))
+                )
             ),
             'acquisition_datetime_utc': acquired['acquisition_datetime_utc'],
             'acquisition_date': acquired['acquisition_date'],
@@ -524,6 +529,9 @@ class Pipelines:
             "EQUATION_VERSION": spec.equation_version,
             "COEFFICIENTS": json.dumps(coefficients, sort_keys=True, separators=(",", ":")),
             "IMPLEMENTATION_FINGERPRINT": spec.implementation_fingerprint,
+            "REQUIRED_BANDS": ",".join(spec.required_bands),
+            "PHYSICAL_UNIT": spec.units,
+            "ENCODING_PROFILE": spec.encoding["profile"],
         }
         target = self._output_target(
             spec.identifier, spec.identifier + "_", scene_uid, ".tif",
@@ -551,14 +559,24 @@ class Pipelines:
             "custom_description": spec.description,
             "required_bands": ",".join(spec.required_bands),
         })
-        r.array2tiff(
-            ndarray_data=encoded,
-            str_output_file=target,
-            transform=transform,
-            projection=projection,
-            no_data=np.nan,
-            metadata=metadata,
-        )
+        temporary = f"{target}.tmp"
+        try:
+            r.array2tiff(
+                ndarray_data=encoded,
+                str_output_file=temporary,
+                transform=transform,
+                projection=projection,
+                no_data=np.nan,
+                metadata=metadata,
+            )
+            os.replace(temporary, target)
+        except Exception:
+            try:
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+            except OSError:
+                pass
+            raise
         return target, metadata
 
     def _write_categorical_raster(self, values, folder, prefix, scene_uid, *,
@@ -834,6 +852,7 @@ class Pipelines:
 
             rrs_source = None
             grs = None
+            custom_failures = []
 
             def close_scene_sources():
                 for dataset in (grs, rrs_source):
@@ -1007,39 +1026,65 @@ class Pipelines:
                     hyspm[np.where(owt_classes[0,:,:]==1)] = np.nan
                     if self.run_custom_equations:
                         custom_bands = {
-                            name: np.asarray(grs[name].values, dtype=float)
+                            name: grs[name].values
                             for name in ce.CANONICAL_BANDS if name in grs
                         }
                         for spec, coefficients in self.custom_equations:
-                            values, diagnostics = ce.evaluate(
-                                spec, custom_bands, coefficients
-                            )
                             record = {
-                                'status': diagnostics['status'],
-                                'message': diagnostics['message'],
-                                'required_bands': diagnostics['required_bands'],
-                                'missing_bands': diagnostics['missing_bands'],
-                                'valid_count': diagnostics['finite_output_count'],
-                                'invalid_count': diagnostics['invalid_count'],
-                                'zero_denominator': diagnostics['zero_denominator'],
-                                'float32_overflow_count': diagnostics['float32_overflow_count'],
+                                'status': 'equation_not_run',
+                                'message': None,
+                                'required_bands': list(spec.required_bands),
+                                'missing_bands': [],
+                                'valid_count': 0,
+                                'invalid_count': 0,
+                                'undefined_count': 0,
+                                'zero_denominator': 0,
+                                'float32_overflow_count': 0,
                                 'equation_version': spec.equation_version,
                                 'coefficients': coefficients,
                                 'implementation_fingerprint': spec.implementation_fingerprint,
                             }
-                            if diagnostics['status'] == 'success':
-                                custom_path, custom_meta = self._write_custom_raster(
-                                    values, spec, coefficients, key,
-                                    transform=grs.attrs['trans'],
-                                    projection=grs.attrs['proj'],
+                            try:
+                                values, diagnostics = ce.evaluate(
+                                    spec, custom_bands, coefficients
                                 )
-                                record['path'] = custom_path
-                                record['encoding'] = spec.encoding
-                                results[key][spec.identifier] = custom_path
+                                record.update({
+                                    'status': diagnostics['status'],
+                                    'message': diagnostics['message'],
+                                    'required_bands': diagnostics['required_bands'],
+                                    'missing_bands': diagnostics['missing_bands'],
+                                    'valid_count': diagnostics['finite_output_count'],
+                                    'invalid_count': diagnostics['invalid_count'],
+                                    'undefined_count': diagnostics.get('undefined_count', 0),
+                                    'zero_denominator': diagnostics['zero_denominator'],
+                                    'float32_overflow_count': diagnostics['float32_overflow_count'],
+                                })
+                                if diagnostics['status'] == 'success':
+                                    custom_path, custom_meta = self._write_custom_raster(
+                                        values, spec, coefficients, key,
+                                        transform=grs.attrs['trans'],
+                                        projection=grs.attrs['proj'],
+                                    )
+                                    record['path'] = custom_path
+                                    record['encoding'] = spec.encoding
+                                    results[key][spec.identifier] = custom_path
+                                else:
+                                    custom_failures.append(spec.identifier)
+                            except FileExistsError as exc:
+                                record.update(status='output_collision', message=str(exc), collision=str(exc))
+                                custom_failures.append(spec.identifier)
+                            except Exception as exc:
+                                record.update(status='write_failed', message=str(exc), error=str(exc))
+                                custom_failures.append(spec.identifier)
                             results[key]['custom_equations'][spec.identifier] = record
                             ledger_entry.setdefault('custom_equations', {})[
                                 spec.identifier
                             ] = record
+                        if custom_failures:
+                            results[key]['custom_status'] = 'partial_success'
+                            results[key]['custom_failures'] = list(custom_failures)
+                            ledger_entry['custom_status'] = 'partial_success'
+                            ledger_entry['custom_failures'] = list(custom_failures)
 
                     scene_timing['valid_water_pixels'] = int(
                         np.count_nonzero(np.isfinite(red))
@@ -1087,9 +1132,12 @@ class Pipelines:
                     )
                
                 stacked = None
-                results[key]['status'] = 'success'
-                ledger_entry['status'] = 'success'
-                ledger_entry['reason'] = None
+                results[key]['status'] = 'partial_success' if custom_failures else 'success'
+                ledger_entry['status'] = 'partial_success' if custom_failures else 'success'
+                ledger_entry['reason'] = (
+                    'one or more custom equations failed; standard outputs retained'
+                    if custom_failures else None
+                )
                 ledger_entry['outputs'] = {
                     name: value for name, value in results[key].items()
                     if isinstance(value, str) and os.path.exists(value)
@@ -1194,10 +1242,12 @@ class Pipelines:
                 'Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1',
                 'RedEdge2', 'RedEdge3', 'Nir2',
             ])
+        # Discover custom products at the batch level, then provide a None slot
+        # for every scene so mixed enabled/disabled batches remain rectangular.
         for spec in ce.CUSTOM_EQUATION_REGISTRY.values():
             folder = os.path.join(out_folders_path, spec.identifier)
             if os.path.isdir(folder) and any(
-                uid in name and name.endswith('.tif') for name in os.listdir(folder)
+                name.endswith('.tif') for name in os.listdir(folder)
             ):
                 products.append(spec.identifier)
 
@@ -1213,7 +1263,7 @@ class Pipelines:
             candidates = sorted(
                 os.path.join(folder, name)
                 for name in os.listdir(folder)
-                if uid in name
+                if uid in name and name.endswith('.tif' if product != 'npix' else '.txt')
             )
             if len(candidates) == 1:
                 matched[product] = candidates[0]
@@ -1241,7 +1291,7 @@ class Pipelines:
 
     @staticmethod
     def _filename_acquisition(path):
-        match = re.match(r"^[^_]+_(20\d{6}T\d{6})_T[0-9A-Z]{5}_[^/]+\.tif$", Path(path).name)
+        match = re.search(r"(20\d{6}T\d{6})", Path(path).name) if path else None
         return Pipelines._datetime_from_text(match.group(1)) if match else None
 
     @staticmethod
@@ -1298,21 +1348,47 @@ class Pipelines:
 
     def line_builder(self):
         output_root = os.path.join(self.output_folder, self.tile_id)
-        npix_folder = os.path.join(output_root, "npix")
-        if not os.path.isdir(npix_folder):
-            raise ValueError("No npix output folder is available to build a report.")
-        uids = sorted(
-            self.get_uid(name)
-            for name in os.listdir(npix_folder)
-            if name.startswith("npixels_") and name.endswith(".txt")
-        )
-        if not uids:
-            raise ValueError("No processed scenes are available to build a report.")
         ledger = self._ledger_index()
+        evidence_uids = set()
+        npix_folder = os.path.join(output_root, "npix")
+        if os.path.isdir(npix_folder):
+            evidence_uids.update(
+                self.get_uid(name)
+                for name in os.listdir(npix_folder)
+                if name.startswith("npixels_") and name.endswith(".txt")
+            )
+        product_names = ['OWT', 'OWTSPM', 'Chla', 'Turb', 'HySPM']
+        if self.report_rrs:
+            product_names.extend([
+                'Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1',
+                'RedEdge2', 'RedEdge3', 'Nir2',
+            ])
+        product_names.extend(spec.identifier for spec in ce.CUSTOM_EQUATION_REGISTRY.values())
+        for product in product_names:
+            folder = Path(output_root) / product
+            if not folder.is_dir():
+                continue
+            prefix = product + '_'
+            for path in folder.glob('*.tif'):
+                if path.name.startswith(prefix):
+                    evidence_uids.add(path.stem[len(prefix):])
+        # Ledger rows are trusted scene evidence even when every raster or the
+        # npix sidecar is absent. Avoid duplicating a raster-backed row.
+        for record_id in ledger:
+            if not any(uid == record_id or uid.endswith('_' + record_id) for uid in evidence_uids):
+                evidence_uids.add(record_id)
+        if not evidence_uids:
+            raise ValueError("No trusted scene ledger or output evidence is available to build a report.")
+
+        def record_for_uid(uid):
+            matches = [record_id for record_id in ledger
+                       if uid == record_id or uid.endswith('_' + record_id)]
+            return sorted(matches, key=len, reverse=True)[0] if matches else uid.rsplit('_', 1)[-1]
+
         rows = {}
-        for uid in uids:
+        for uid in sorted(evidence_uids):
             row = self.match_file_uid(output_root, uid)
-            record_id = uid.rsplit("_", 1)[-1]
+            record_id = record_for_uid(uid)
             row.update({key: value for key, value in ledger.get(record_id, {}).items() if key not in {"outputs", "error"}})
             row["record_id"] = record_id
             provenance = {}
@@ -1320,14 +1396,24 @@ class Pipelines:
                 spec.identifier for spec in ce.CUSTOM_EQUATION_REGISTRY.values()
             )
             for product in provenance_products:
-                provenance = self._raster_provenance(row.get(product))
-                if provenance:
+                candidate = row.get(product)
+                candidate_provenance = self._raster_provenance(candidate)
+                if candidate_provenance:
+                    provenance = candidate_provenance
                     break
-            filename_date = next((self._filename_acquisition(row.get(product)) for product in provenance_products if row.get(product)), None)
-            acquisition = provenance.get("acquisition_datetime_utc") or filename_date
+            filename_date = next((self._filename_acquisition(row.get(product))
+                                  for product in provenance_products if row.get(product)), None)
+            ledger_date = row.get('acquisition_datetime_utc')
+            ledger_acquisition = None
+            if ledger_date:
+                try:
+                    ledger_acquisition = self._datetime_from_text(ledger_date)
+                except ValueError:
+                    ledger_acquisition = None
+            acquisition = provenance.get("acquisition_datetime_utc") or filename_date or ledger_acquisition
             if acquisition is None:
                 row["acquisition_status"] = "error"
-                row["acquisition_error"] = "No valid acquisition time in raster metadata or standardized output filename; cannot report record_id=" + record_id + "."
+                row["acquisition_error"] = "No valid acquisition time in raster metadata, ledger, or standardized output filename; cannot report record_id=" + record_id + "."
             else:
                 row["acquisition_status"] = "success"
                 row["acquisition_datetime_utc"] = acquisition.strftime("%Y-%m-%d %H:%M:%S")
@@ -1357,99 +1443,188 @@ class Pipelines:
     @staticmethod
     def build_excel(itermediary_dict, file_to_save):
         rows = [Pipelines._flatten_report_row(row) for row in itermediary_dict.values()]
-        leading = ["record_id", "scene_uid", "acquisition_datetime_utc", "acquisition_date", "acquisition_time_utc"]
-        invalid = [row.get("record_id", "") for row in rows if row.get("acquisition_status") != "error" and not row.get("acquisition_datetime_utc")]
+        water_leading = ["record_id", "acquisition_datetime_utc"]
+        processing_leading = [
+            "record_id", "scene_uid", "acquisition_datetime_utc",
+            "acquisition_date", "acquisition_time_utc",
+        ]
+        invalid = [
+            row.get("record_id", "") for row in rows
+            if row.get("acquisition_status") != "error"
+            and not row.get("acquisition_datetime_utc")
+        ]
         if invalid:
-            raise ValueError("Cannot write consolidated report without valid acquisition dates: " + ", ".join(map(str, invalid)))
+            raise ValueError(
+                "Cannot write consolidated report without valid acquisition dates: "
+                + ", ".join(map(str, invalid))
+            )
         unique = list(dict.fromkeys(key for row in rows for key in row))
         custom = tuple(
             spec.identifier for spec in ce.CUSTOM_EQUATION_REGISTRY.values()
             if any(key.startswith(spec.identifier + "_") for key in unique)
         )
-        primary = ("Chla", "Turb", "HySPM") + custom
+        standard = ("Chla", "Turb", "HySPM")
         rrs = ("Aerosol", "Blue", "Green", "Red", "RedEdge1", "RedEdge2", "RedEdge3", "Nir2")
-        statistic_suffixes = {
+        product_order = standard + custom + rrs
+        statistic_suffixes = (
             "min", "max", "mean", "count", "std", "median",
             "roi_features", "roi_features_with_data", "status",
-        }
-        quality = {"Water_pixels", "Neg_Rrs_B4", "Low_Rrs", "OWT_1", "npix_status"}
-        numeric_quality = {"Water_pixels", "Neg_Rrs_B4", "Low_Rrs", "OWT_1"}
-        def is_stat(key, products):
-            for product in products:
-                prefix = product + "_"
-                if key.startswith(prefix):
-                    return key[len(prefix):] in statistic_suffixes
-            return False
-        water_columns = list(dict.fromkeys(
-            [key for key in unique if key in quality or is_stat(key, primary)]
-            + [key for key in unique if is_stat(key, rrs)]
-        ))
-        processing_columns = [key for key in unique if key not in set(leading + water_columns) and key != "acquisition_status"]
-        preferred = ("source_path", "mask_path", "processor", "platform", "processor_version", "tile", "source_product_name", "mask_mode", "mask_match_type", "report_file_status", "missing_products", "ambiguous_products", "status", "reason", "error", "acquisition_status")
-        processing_columns = [key for key in preferred if key in processing_columns or (key == "acquisition_status" and key in unique)] + [key for key in processing_columns if key not in preferred]
-        rows.sort(key=lambda row: (pd.to_datetime(row.get("acquisition_datetime_utc"), errors="coerce", utc=True), str(row.get("record_id", ""))))
+        )
+        quality = ("Water_pixels", "Neg_Rrs_B4", "Low_Rrs", "OWT_1", "npix_status")
+        numeric_quality = set(quality[:-1])
 
-        def frame(columns):
-            result = pd.DataFrame([{column: row.get(column) for column in leading + columns} for row in rows], columns=leading + columns)
-            dt = pd.to_datetime(result["acquisition_datetime_utc"], errors="coerce", utc=True).dt.tz_localize(None)
-            result["acquisition_datetime_utc"] = dt
-            result["acquisition_date"] = dt.dt.date
-            result["acquisition_time_utc"] = dt.dt.time
+        def product_columns(product):
+            return [
+                f"{product}_{suffix}"
+                for suffix in statistic_suffixes
+                if f"{product}_{suffix}" in unique
+            ]
+
+        water_columns = []
+        for product in product_order:
+            water_columns.extend(product_columns(product))
+        water_columns.extend(key for key in quality if key in unique)
+        water_columns = list(dict.fromkeys(water_columns))
+        processing_set = set(water_leading + processing_leading + water_columns)
+        processing_columns = [key for key in unique if key not in processing_set]
+        preferred = (
+            "source_path", "mask_path", "processor", "platform", "processor_version",
+            "tile", "source_product_name", "mask_mode", "mask_match_type",
+            "report_file_status", "missing_products", "ambiguous_products", "status",
+            "reason", "error", "acquisition_status",
+        )
+        processing_columns = (
+            [key for key in preferred if key in processing_columns]
+            + [key for key in processing_columns if key not in preferred]
+        )
+        rows.sort(key=lambda row: (
+            pd.to_datetime(row.get("acquisition_datetime_utc"), errors="coerce", utc=True),
+            str(row.get("record_id", "")),
+        ))
+
+        def frame(columns, leading):
+            result = pd.DataFrame(
+                [{column: row.get(column) for column in leading + columns} for row in rows],
+                columns=leading + columns,
+            )
+            if "record_id" in result:
+                result["record_id"] = result["record_id"].map(
+                    lambda value: None if pd.isna(value) else str(value)
+                )
+            if "scene_uid" in result:
+                result["scene_uid"] = result["scene_uid"].map(
+                    lambda value: None if pd.isna(value) else str(value)
+                )
+            if "acquisition_datetime_utc" in result:
+                dt = pd.to_datetime(
+                    result["acquisition_datetime_utc"], errors="coerce", utc=True
+                ).dt.tz_localize(None)
+                result["acquisition_datetime_utc"] = dt
+                if "acquisition_date" in result:
+                    result["acquisition_date"] = dt.dt.date
+                if "acquisition_time_utc" in result:
+                    result["acquisition_time_utc"] = dt.dt.time
+            numeric_suffixes = (
+                "_count", "_min", "_max", "_mean", "_std", "_median",
+                "_fraction", "_multiplier", "_nodata", "_features", "_features_with_data",
+            )
             for column in columns:
-                if (column in numeric_quality or column.endswith(("_count", "_min", "_max", "_mean", "_std", "_median", "_fraction", "_multiplier", "_nodata", "_features", "_features_with_data"))):
+                if column in numeric_quality or column.endswith(numeric_suffixes):
                     result[column] = pd.to_numeric(result[column], errors="coerce")
             return result
 
-        water = frame(water_columns)
-        processing = frame(processing_columns)
+        water = frame(water_columns, water_leading)
+        processing = frame(processing_columns, processing_leading)
         Path(file_to_save).parent.mkdir(parents=True, exist_ok=True)
-        with pd.ExcelWriter(file_to_save, engine="openpyxl", datetime_format="yyyy-mm-dd hh:mm:ss", date_format="yyyy-mm-dd") as writer:
+        with pd.ExcelWriter(
+            file_to_save,
+            engine="openpyxl",
+            datetime_format="yyyy-mm-dd hh:mm:ss",
+            date_format="yyyy-mm-dd",
+        ) as writer:
             water.to_excel(writer, sheet_name="Water quality", index=False)
             processing.to_excel(writer, sheet_name="Processing details", index=False)
             workbook = writer.book
-            from openpyxl.styles import Font, PatternFill, Alignment
             from openpyxl.comments import Comment
+            from openpyxl.styles import Alignment, Font, PatternFill
+            from openpyxl.utils import get_column_letter
+
+            unit_notes = {
+                "Chla": "Chl-a statistics use physical units of mg m-3; *_count and *_roi_features are counts; *_status is text.",
+                "Turb": "Turbidity statistics use physical units of NTU; *_count and *_roi_features are counts; *_status is text.",
+                "HySPM": "HySPM statistics use physical units of mg L-1; *_count and *_roi_features are counts; *_status is text.",
+            }
             for worksheet in workbook.worksheets:
-                worksheet.freeze_panes = "F2"
+                worksheet.freeze_panes = "C2" if worksheet.title == "Water quality" else "F2"
                 worksheet.auto_filter.ref = worksheet.dimensions
                 worksheet.sheet_view.showGridLines = False
+                worksheet.row_dimensions[1].height = 96 if worksheet.title == "Water quality" else 42
                 for cell in worksheet[1]:
                     cell.font = Font(bold=True, color="FFFFFF")
                     cell.fill = PatternFill("solid", fgColor="1F4E78")
+                    if worksheet.title == "Water quality" and cell.column > 2:
+                        cell.alignment = Alignment(
+                            text_rotation=45, wrap_text=True,
+                            horizontal="center", vertical="center",
+                        )
+                    else:
+                        cell.alignment = Alignment(
+                            wrap_text=True, horizontal="center", vertical="center"
+                        )
                 if worksheet.title == "Water quality":
-                    unit_notes = {
-                        "Chla": "Chl-a statistics use physical units of mg m-3; *_count and *_roi_features are counts; *_status is text.",
-                        "Turb": "Turbidity statistics use physical units of NTU; *_count and *_roi_features are counts; *_status is text.",
-                        "HySPM": "HySPM statistics use physical units of mg L-1; *_count and *_roi_features are counts; *_status is text.",
-                        "Aerosol": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
-                        "Blue": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
-                        "Green": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
-                        "Red": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
-                        "RedEdge1": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
-                        "RedEdge2": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
-                        "RedEdge3": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
-                        "Nir2": "Rrs statistics use physical units of sr-1; *_count and *_roi_features are counts; *_status is text.",
-                    }
-                    for cell in worksheet[1]:
+                    worksheet["A1"].comment = Comment(
+                        "Stable text UID linking this worksheet to Processing details.", "GET-Pak"
+                    )
+                    worksheet["B1"].comment = Comment(
+                        "Native Excel date-time in UTC; displayed yyyy-mm-dd hh:mm:ss.", "GET-Pak"
+                    )
+                    for cell in worksheet[1][2:]:
                         for prefix, note in unit_notes.items():
                             if str(cell.value).startswith(prefix + "_"):
                                 cell.comment = Comment(note, "GET-Pak")
                                 break
-                for cell in worksheet[1]:
-                    cell.alignment = Alignment(wrap_text=True, vertical="center")
-                worksheet.row_dimensions[1].height = 30
-                for column in worksheet.iter_cols(1, worksheet.max_column):
-                    name = worksheet.cell(1, column[0].column).value or ""
-                    width = min(42, max(12, len(str(name)) + 2, max((len(str(cell.value)) for cell in column[1:25] if cell.value is not None), default=0) + 2))
-                    worksheet.column_dimensions[column[0].column_letter].width = width
-                for cell in worksheet["A"][1:] + worksheet["B"][1:]:
-                    cell.number_format = "@"
-                for cell in worksheet["C"][1:]:
-                    cell.number_format = "yyyy-mm-dd hh:mm:ss"
-                for cell in worksheet["D"][1:]:
-                    cell.number_format = "yyyy-mm-dd"
-                for cell in worksheet["E"][1:]:
-                    cell.number_format = "hh:mm:ss"
+                for column in range(1, worksheet.max_column + 1):
+                    name = worksheet.cell(1, column).value or ""
+                    letter = get_column_letter(column)
+                    if worksheet.title == "Water quality":
+                        if column == 1:
+                            width = 25
+                        elif column == 2:
+                            width = 22
+                        elif str(name).endswith("_status"):
+                            width = 18
+                        else:
+                            width = 14
+                    else:
+                        width = {
+                            1: 25, 2: 48, 3: 22, 4: 12, 5: 12,
+                        }.get(column, min(30, max(16, len(str(name)) + 2)))
+                    worksheet.column_dimensions[letter].width = width
+                for row in worksheet.iter_rows(min_row=2):
+                    for cell in row:
+                        if cell.column == 1 or (
+                            worksheet.title == "Processing details" and cell.column == 2
+                        ):
+                            cell.number_format = "@"
+                            cell.alignment = Alignment(horizontal="left", vertical="center")
+                        elif (
+                            worksheet.title == "Water quality" and cell.column == 2
+                        ):
+                            cell.number_format = "yyyy-mm-dd hh:mm:ss"
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                        elif worksheet.title == "Processing details" and cell.column == 3:
+                            cell.number_format = "yyyy-mm-dd hh:mm:ss"
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                        elif worksheet.title == "Processing details" and cell.column == 4:
+                            cell.number_format = "yyyy-mm-dd"
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                        elif worksheet.title == "Processing details" and cell.column == 5:
+                            cell.number_format = "hh:mm:ss"
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                        elif isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
+                            cell.alignment = Alignment(horizontal="center", vertical="center")
+                        else:
+                            cell.alignment = Alignment(horizontal="left", vertical="center")
             workbook.active = 0
 
     # ,---------,
@@ -1477,7 +1652,7 @@ class Pipelines:
             for name in ("min", "max", "mean", "count", "std", "median")
         }
         if not path_to_tif or not os.path.isfile(path_to_tif):
-            empty[f"{prefix}_status"] = "missing_product"
+            empty[f"{prefix}_status"] = "missing raster"
             return empty
 
         try:
@@ -1596,7 +1771,7 @@ class Pipelines:
                 raise ValueError(f"{prefix} raster has no nodata value; cannot mask invalid pixels safely.")
             stats = m.shp_stats(tif_file=path_to_tif, shp_poly=shp_file)
         except Exception as error:
-            empty[f"{prefix}_status"] = "error"
+            empty[f"{prefix}_status"] = "unreadable raster"
             empty[f"{prefix}_error"] = str(error)
             return empty
 
@@ -1691,7 +1866,7 @@ class Pipelines:
                 if any(row.get(spec.identifier) for row in itermediary_batch_dict.values()):
                     print(f"Fetching {spec.identifier} custom-equation data..")
                     _ = [itermediary_batch_dict[key].update(self._parse_tifs(
-                        itermediary_batch_dict[key][spec.identifier], roi_vector,
+                        itermediary_batch_dict[key].get(spec.identifier), roi_vector,
                         prefix=spec.identifier, encoding_settings=self.settings))
                         for key in itermediary_batch_dict.keys()]
                     print("Done.")

@@ -7,7 +7,10 @@ from dataclasses import dataclass
 import ast
 import hashlib
 import inspect
+import json
+import marshal
 import math
+from pathlib import Path
 
 import numpy as np
 
@@ -31,8 +34,64 @@ class CustomEquationSpec:
 
     @property
     def implementation_fingerprint(self):
-        source = inspect.getsource(self.function).encode("utf-8")
-        return hashlib.sha256(source).hexdigest()[:16]
+        """Return a deterministic identity for the supported equation boundary."""
+        module = inspect.getmodule(self.function)
+        module_source = ""
+        module_path = getattr(module, "__file__", None)
+        if module_path:
+            try:
+                module_source = Path(module_path).read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                module_source = ""
+        def callable_payload(function):
+            try:
+                source = inspect.getsource(function)
+            except (OSError, TypeError):
+                source = ""
+            code = getattr(function, "__code__", None)
+            code_bytes = marshal.dumps(code) if code is not None else repr(function).encode("utf-8")
+            return source.encode("utf-8") + b"\0" + code_bytes
+
+        function_payload = callable_payload(self.function)
+        helper_payloads = []
+        globals_dict = getattr(self.function, "__globals__", {})
+        code = getattr(self.function, "__code__", None)
+        for name in sorted(getattr(code, "co_names", ())):
+            helper = globals_dict.get(name)
+            if not callable(helper) or helper is self.function:
+                continue
+            helper_payloads.append(
+                name.encode("utf-8") + b"@" +
+                str(getattr(helper, "__module__", "")).encode("utf-8") + b"=" +
+                callable_payload(helper)
+            )
+        contract = {
+            "identifier": self.identifier,
+            "required_bands": list(self.required_bands),
+            "units": self.units,
+            "equation_version": self.equation_version,
+            "encoding": self.encoding,
+        }
+        payload = json.dumps(contract, sort_keys=True, default=repr,
+                             separators=(",", ":"))
+        digest = hashlib.sha256()
+        digest.update(module_source.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(function_payload)
+        for helper_payload in helper_payloads:
+            digest.update(b"\0helper:")
+            digest.update(helper_payload)
+        digest.update(b"\0")
+        digest.update(payload.encode("utf-8"))
+        return digest.hexdigest()[:16]
+
+
+@dataclass(frozen=True)
+class EquationEvaluation:
+    """Optional equation return contract for domain-specific diagnostics."""
+
+    values: object
+    diagnostics: dict
 
 
 def _safe_ratio(red_edge, red):
@@ -48,14 +107,23 @@ def _safe_ratio(red_edge, red):
 
 def example_equation_01(RedEdge1, Red):
     """Dimensionless demonstration ratio: RedEdge1 / Red."""
-    return _safe_ratio(RedEdge1, Red)
+    red = np.asarray(Red, dtype=float)
+    return EquationEvaluation(
+        _safe_ratio(RedEdge1, red),
+        {"zero_denominator": int(np.count_nonzero(np.isfinite(red) & (red == 0)))},
+    )
 
 
 def example_equation_02(RedEdge1, Red, a=0.0, b=1.0, c=1.0):
     """Dimensionless demonstration polynomial: a + b*ratio + c*ratio**2."""
     ratio = _safe_ratio(RedEdge1, Red)
     with np.errstate(over="ignore", invalid="ignore"):
-        return a + b * ratio + c * ratio ** 2
+        values = a + b * ratio + c * ratio ** 2
+    red = np.asarray(Red, dtype=float)
+    return EquationEvaluation(
+        values,
+        {"zero_denominator": int(np.count_nonzero(np.isfinite(red) & (red == 0)))},
+    )
 
 
 CUSTOM_EQUATION_REGISTRY = {
@@ -163,39 +231,61 @@ def resolve_configuration(config, supported_bands=None):
 
 def evaluate(spec, bands, coefficients):
     """Evaluate one product, returning Float32 values and diagnostics."""
-    available = [np.asarray(value, dtype=float) for value in bands.values()]
-    shape = np.broadcast_shapes(*(value.shape for value in available)) if available else ()
     missing = [name for name in spec.required_bands if name not in bands]
     diagnostics = {
         "status": "success", "message": None, "required_bands": list(spec.required_bands),
         "missing_bands": missing, "zero_denominator": 0, "invalid_count": 0,
-        "float32_overflow_count": 0, "finite_output_count": 0,
+        "undefined_count": 0, "float32_overflow_count": 0,
+        "finite_output_count": 0,
     }
+    try:
+        # Only required inputs participate in conversion and shape calculation.
+        raw_arrays = {
+            name: np.asarray(bands[name], dtype=float)
+            for name in spec.required_bands if name in bands
+        }
+        shape = np.broadcast_shapes(*(value.shape for value in raw_arrays.values())) \
+            if raw_arrays else ()
+    except Exception as exc:
+        diagnostics.update(
+            status="failed",
+            message=f"{spec.identifier} required-band input is malformed: {exc}",
+        )
+        return np.full((), np.nan, dtype=np.float32), diagnostics
+
     if missing:
         diagnostics.update(status="missing_required_band",
                            message="Missing required band(s): " + ", ".join(missing))
         return np.full(shape, np.nan, dtype=np.float32), diagnostics
     try:
         arrays = {
-            name: np.broadcast_to(np.asarray(bands[name], dtype=float), shape)
+            name: np.broadcast_to(raw_arrays[name], shape)
             for name in spec.required_bands
         }
         finite = np.ones(shape, dtype=bool)
         for value in arrays.values():
             finite &= np.isfinite(value)
-        denominator_valid = np.isfinite(arrays["Red"]) & (arrays["Red"] != 0)
-        valid = finite & denominator_valid
-        diagnostics["zero_denominator"] = int(np.count_nonzero(finite & ~denominator_valid))
-        result = np.asarray(spec.function(**arrays, **coefficients), dtype=float)
+        diagnostics["invalid_count"] = int(np.count_nonzero(~finite))
+        evaluated = spec.function(**arrays, **coefficients)
+        explicit = {}
+        if isinstance(evaluated, EquationEvaluation):
+            evaluated, explicit = evaluated.values, dict(evaluated.diagnostics or {})
+        elif isinstance(evaluated, tuple) and len(evaluated) == 2 and isinstance(evaluated[1], dict):
+            evaluated, explicit = evaluated
+        for key, value in explicit.items():
+            if key in diagnostics:
+                diagnostics[key] = int(value) if key.endswith("_count") or key == "zero_denominator" else value
+        result = np.asarray(evaluated, dtype=float)
         if result.shape != shape:
             result = np.broadcast_to(result, shape)
         with np.errstate(over="ignore", invalid="ignore"):
-            too_large = valid & np.isfinite(result) & (np.abs(result) > np.finfo(np.float32).max)
+            too_large = finite & np.isfinite(result) & (np.abs(result) > np.finfo(np.float32).max)
             cast = result.astype(np.float32)
-        cast_invalid = valid & ~np.isfinite(cast)
+        cast_invalid = finite & np.isfinite(result) & ~np.isfinite(cast)
         diagnostics["float32_overflow_count"] = int(np.count_nonzero(too_large | cast_invalid))
-        diagnostics["invalid_count"] = int(np.count_nonzero(~valid))
-        cast[~valid | too_large | cast_invalid] = np.nan
+        diagnostics["undefined_count"] = int(np.count_nonzero(finite & ~np.isfinite(result)))
+        valid_output = finite & np.isfinite(result) & ~too_large & ~cast_invalid
+        cast[~valid_output] = np.nan
         diagnostics["finite_output_count"] = int(np.count_nonzero(np.isfinite(cast)))
         return cast, diagnostics
     except Exception as exc:
