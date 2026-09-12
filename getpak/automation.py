@@ -15,6 +15,7 @@ import xarray as xr
 from pathlib import Path
 from datetime import datetime, timezone
 from getpak import inversion_functions as ifunc
+from getpak import custom_equations as ce
 from getpak.input import Input
 from getpak.input import GRS as g
 from getpak.input import ACOLITE_S2
@@ -35,6 +36,7 @@ class Pipelines:
         self._skip_output_targets = set()
         self.grid_by_uid = {}
         self.settings['_config_dir'] = str(Path(config_path).resolve().parent) if config_path else str(Path(__file__).resolve().parent.parent)
+        self.custom_equations = ce.resolve_configuration(self.settings)
         self.INSTANCE_TIME_TAG = datetime.now().strftime('%Y%m%dT%H%M%S')
         self._run_started_perf = time.perf_counter()
         self.run_started_utc = datetime.now(timezone.utc).isoformat()
@@ -82,6 +84,12 @@ class Pipelines:
         return self._as_bool(
             self.settings.get('processing', {}).get('report_rrs', False)
             )
+
+    @property
+    def run_custom_equations(self):
+        return self._as_bool(
+            self.settings.get("processing", {}).get("run_custom_equations", False)
+        )
 
     @property
     def tile_id(self):
@@ -339,7 +347,9 @@ class Pipelines:
         return '' if value is None else str(value)
 
     def _output_contract_metadata(self, scene_uid, product, *, unit,
-                                  stored_multiplier, nodata, categorical=False):
+                                  stored_multiplier, nodata, categorical=False,
+                                  encoding_profile=None, dtype=None,
+                                  maximum_physical_value=None):
         entry = getattr(self, 'ledger_by_uid', {}).get(scene_uid, {})
         info = getattr(self, 'meta', {}).get(scene_uid, {})
         acquired = self._acquisition_fields(info) if info else {
@@ -364,16 +374,17 @@ class Pipelines:
             'stored_multiplier': float(stored_multiplier),
             'decode_multiplier': float(1.0 / stored_multiplier),
             'add_offset': 0.0,
-            'nodata': int(nodata),
+            'nodata': (None if isinstance(nodata, (float, np.floating)) and np.isnan(nodata) else int(nodata)),
             'encoding_version': 'GETPAK-ENC-2',
-            'encoding_profile': self.encoding_settings['output_encoding']['encoding_profile'],
-            'dtype': self.encoding_settings['output_encoding'][
+            'encoding_profile': (encoding_profile or self.encoding_settings['output_encoding']['encoding_profile']),
+            'dtype': (dtype or self.encoding_settings['output_encoding'][
                 'categorical_dtype' if categorical else 'continuous_dtype'
-            ],
+            ]),
             'raster_scale': float(1.0 / stored_multiplier),
             'resolution': float(1.0 / stored_multiplier),
             'maximum_physical_value': (
-                None if categorical else float(65534.0 / stored_multiplier)
+                maximum_physical_value if maximum_physical_value is not None else
+                (None if categorical else float(65534.0 / stored_multiplier))
             ),
             'acquisition_datetime_utc': acquired['acquisition_datetime_utc'],
             'acquisition_date': acquired['acquisition_date'],
@@ -433,7 +444,7 @@ class Pipelines:
             )
         return required
 
-    def _output_target(self, folder, prefix, scene_uid, suffix):
+    def _output_target(self, folder, prefix, scene_uid, suffix, identity_metadata=None):
         target = self._output_filename(folder, prefix, scene_uid, suffix)
         if not os.path.exists(target):
             return target
@@ -462,6 +473,19 @@ class Pipelines:
             raise FileExistsError(
                 f'Refusing to overwrite conflicting output identity: {target}'
             )
+        if identity_metadata:
+            import rasterio
+            with rasterio.open(target) as source:
+                tags = source.tags()
+            mismatches = [
+                key for key, value in identity_metadata.items()
+                if tags.get(key) != self._tag_value(value)
+            ]
+            if mismatches:
+                raise FileExistsError(
+                    f'Refusing to reuse custom output with changed identity '
+                    f'({", ".join(mismatches)}): {target}'
+                )
         if not self.overwrite_outputs:
             self._skip_output_targets.add(os.path.abspath(target))
         return target
@@ -489,6 +513,50 @@ class Pipelines:
             transform=transform,
             projection=projection,
             no_data=nodata,
+            metadata=metadata,
+        )
+        return target, metadata
+
+    def _write_custom_raster(self, values, spec, coefficients, scene_uid, *,
+                             transform, projection):
+        identity = {
+            "EQUATION_ID": spec.identifier,
+            "EQUATION_VERSION": spec.equation_version,
+            "COEFFICIENTS": json.dumps(coefficients, sort_keys=True, separators=(",", ":")),
+            "IMPLEMENTATION_FINGERPRINT": spec.implementation_fingerprint,
+        }
+        target = self._output_target(
+            spec.identifier, spec.identifier + "_", scene_uid, ".tif",
+            identity_metadata=identity,
+        )
+        if self._target_was_skipped(target):
+            return target, {"skipped_existing": True}
+        encoded, metadata = u.to_float32_custom(
+            values, unit=spec.units, product=spec.identifier,
+            return_metadata=True,
+        )
+        metadata.update(self._output_contract_metadata(
+            scene_uid, spec.identifier, unit=spec.units,
+            stored_multiplier=1.0, nodata=np.nan,
+            encoding_profile=spec.encoding["profile"], dtype="float32",
+            maximum_physical_value=None,
+        ))
+        metadata.update(identity)
+        metadata.update({
+            "equation_id": spec.identifier,
+            "equation_version": spec.equation_version,
+            "coefficients": json.dumps(coefficients, sort_keys=True),
+            "implementation_fingerprint": spec.implementation_fingerprint,
+            "custom_product": "true",
+            "custom_description": spec.description,
+            "required_bands": ",".join(spec.required_bands),
+        })
+        r.array2tiff(
+            ndarray_data=encoded,
+            str_output_file=target,
+            transform=transform,
+            projection=projection,
+            no_data=np.nan,
             metadata=metadata,
         )
         return target, metadata
@@ -707,6 +775,10 @@ class Pipelines:
         Path(os.path.join(imgs_out, "Chla")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "Turb")).mkdir(parents=True, exist_ok=True)
         Path(os.path.join(imgs_out, "HySPM")).mkdir(parents=True, exist_ok=True)
+        if self.run_custom_equations:
+            for spec, _ in self.custom_equations:
+                Path(os.path.join(imgs_out, spec.identifier)).mkdir(parents=True, exist_ok=True)
+
         # Rrs bands
         if report_rrs:
             Path(os.path.join(imgs_out, "Aerosol")).mkdir(parents=True, exist_ok=True)
@@ -738,6 +810,7 @@ class Pipelines:
                 'status': 'processing',
                 'error': None,
                 'scaling': {},
+                'custom_equations': {},
             }
             ledger_entry = self.ledger_by_uid[key]
             ledger_entry['status'] = 'processing'
@@ -932,6 +1005,42 @@ class Pipelines:
                     chla[np.where(owt_classes[0,:,:]==1)] = np.nan
                     turb[np.where(owt_classes[0,:,:]==1)] = np.nan
                     hyspm[np.where(owt_classes[0,:,:]==1)] = np.nan
+                    if self.run_custom_equations:
+                        custom_bands = {
+                            name: np.asarray(grs[name].values, dtype=float)
+                            for name in ce.CANONICAL_BANDS if name in grs
+                        }
+                        for spec, coefficients in self.custom_equations:
+                            values, diagnostics = ce.evaluate(
+                                spec, custom_bands, coefficients
+                            )
+                            record = {
+                                'status': diagnostics['status'],
+                                'message': diagnostics['message'],
+                                'required_bands': diagnostics['required_bands'],
+                                'missing_bands': diagnostics['missing_bands'],
+                                'valid_count': diagnostics['finite_output_count'],
+                                'invalid_count': diagnostics['invalid_count'],
+                                'zero_denominator': diagnostics['zero_denominator'],
+                                'float32_overflow_count': diagnostics['float32_overflow_count'],
+                                'equation_version': spec.equation_version,
+                                'coefficients': coefficients,
+                                'implementation_fingerprint': spec.implementation_fingerprint,
+                            }
+                            if diagnostics['status'] == 'success':
+                                custom_path, custom_meta = self._write_custom_raster(
+                                    values, spec, coefficients, key,
+                                    transform=grs.attrs['trans'],
+                                    projection=grs.attrs['proj'],
+                                )
+                                record['path'] = custom_path
+                                record['encoding'] = spec.encoding
+                                results[key][spec.identifier] = custom_path
+                            results[key]['custom_equations'][spec.identifier] = record
+                            ledger_entry.setdefault('custom_equations', {})[
+                                spec.identifier
+                            ] = record
+
                     scene_timing['valid_water_pixels'] = int(
                         np.count_nonzero(np.isfinite(red))
                     )
@@ -1085,6 +1194,12 @@ class Pipelines:
                 'Aerosol', 'Blue', 'Green', 'Red', 'RedEdge1',
                 'RedEdge2', 'RedEdge3', 'Nir2',
             ])
+        for spec in ce.CUSTOM_EQUATION_REGISTRY.values():
+            folder = os.path.join(out_folders_path, spec.identifier)
+            if os.path.isdir(folder) and any(
+                uid in name and name.endswith('.tif') for name in os.listdir(folder)
+            ):
+                products.append(spec.identifier)
 
         matched = {}
         missing = []
@@ -1201,11 +1316,14 @@ class Pipelines:
             row.update({key: value for key, value in ledger.get(record_id, {}).items() if key not in {"outputs", "error"}})
             row["record_id"] = record_id
             provenance = {}
-            for product in ("Chla", "Turb", "HySPM", "OWT", "OWTSPM"):
+            provenance_products = ("Chla", "Turb", "HySPM", "OWT", "OWTSPM") + tuple(
+                spec.identifier for spec in ce.CUSTOM_EQUATION_REGISTRY.values()
+            )
+            for product in provenance_products:
                 provenance = self._raster_provenance(row.get(product))
                 if provenance:
                     break
-            filename_date = next((self._filename_acquisition(row.get(product)) for product in ("Chla", "Turb", "HySPM", "OWT", "OWTSPM") if row.get(product)), None)
+            filename_date = next((self._filename_acquisition(row.get(product)) for product in provenance_products if row.get(product)), None)
             acquisition = provenance.get("acquisition_datetime_utc") or filename_date
             if acquisition is None:
                 row["acquisition_status"] = "error"
@@ -1243,7 +1361,12 @@ class Pipelines:
         invalid = [row.get("record_id", "") for row in rows if row.get("acquisition_status") != "error" and not row.get("acquisition_datetime_utc")]
         if invalid:
             raise ValueError("Cannot write consolidated report without valid acquisition dates: " + ", ".join(map(str, invalid)))
-        primary = ("Chla", "Turb", "HySPM")
+        unique = list(dict.fromkeys(key for row in rows for key in row))
+        custom = tuple(
+            spec.identifier for spec in ce.CUSTOM_EQUATION_REGISTRY.values()
+            if any(key.startswith(spec.identifier + "_") for key in unique)
+        )
+        primary = ("Chla", "Turb", "HySPM") + custom
         rrs = ("Aerosol", "Blue", "Green", "Red", "RedEdge1", "RedEdge2", "RedEdge3", "Nir2")
         statistic_suffixes = {
             "min", "max", "mean", "count", "std", "median",
@@ -1251,7 +1374,6 @@ class Pipelines:
         }
         quality = {"Water_pixels", "Neg_Rrs_B4", "Low_Rrs", "OWT_1", "npix_status"}
         numeric_quality = {"Water_pixels", "Neg_Rrs_B4", "Low_Rrs", "OWT_1"}
-        unique = list(dict.fromkeys(key for row in rows for key in row))
         def is_stat(key, products):
             for product in products:
                 prefix = product + "_"
@@ -1501,6 +1623,17 @@ class Pipelines:
         }
         if warning:
             result[f"{prefix}_warning"] = warning
+        for tag, name in (
+            ("EQUATION_ID", "equation_id"),
+            ("EQUATION_VERSION", "equation_version"),
+            ("COEFFICIENTS", "coefficients"),
+            ("IMPLEMENTATION_FINGERPRINT", "implementation_fingerprint"),
+            ("CUSTOM_PRODUCT", "custom_product"),
+            ("CUSTOM_DESCRIPTION", "custom_description"),
+            ("REQUIRED_BANDS", "required_bands"),
+        ):
+            if tags.get(tag) not in (None, ""):
+                result[f"{prefix}_{name}"] = tags[tag]
         return result
 
     def build_report(self):
@@ -1553,6 +1686,15 @@ class Pipelines:
                 print('Fetching Nir2-865nm data..')
                 _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['Nir2'], roi_vector, prefix='Nir2', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]
                 print('Done.')
+
+            for spec in ce.CUSTOM_EQUATION_REGISTRY.values():
+                if any(row.get(spec.identifier) for row in itermediary_batch_dict.values()):
+                    print(f"Fetching {spec.identifier} custom-equation data..")
+                    _ = [itermediary_batch_dict[key].update(self._parse_tifs(
+                        itermediary_batch_dict[key][spec.identifier], roi_vector,
+                        prefix=spec.identifier, encoding_settings=self.settings))
+                        for key in itermediary_batch_dict.keys()]
+                    print("Done.")
 
             print('Fetching SPM L2B data..')
             _ = [itermediary_batch_dict[key].update(self._parse_tifs(itermediary_batch_dict[key]['HySPM'], roi_vector, prefix='HySPM', encoding_settings=self.settings)) for key in itermediary_batch_dict.keys()]

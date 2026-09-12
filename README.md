@@ -134,6 +134,8 @@ Each ROI report is one XLSX workbook with exactly two worksheets: Water quality 
 
 Dates come from raster acquisition metadata first and the standardized output filename second. They are actual Excel date/time values, never run time or file modification time. Rows are sorted by acquisition time and identity, with frozen leading columns and filters. Missing measurements are blank, while readable status fields distinguish missing data from valid zeros. See docs/report_columns.md for the final columns and meanings.
 
+Optional custom demonstration equations are documented in docs/custom_equations.md.
+
 
 ## Troubleshooting
 

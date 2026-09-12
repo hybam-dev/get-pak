@@ -319,6 +319,43 @@ class Utils:
         return (encoded, metadata) if return_metadata else encoded
 
     @staticmethod
+    def to_float32_custom(arr, unit="1", product="custom", return_metadata=False):
+        """Encode signed custom products as Float32 with NaN no-data."""
+        values = np.asarray(arr, dtype=float)
+        finite = np.isfinite(values)
+        overflow = finite & (np.abs(values) > np.finfo(np.float32).max)
+        encodable = finite & ~overflow
+        with np.errstate(over="ignore", invalid="ignore"):
+            encoded = values.astype(np.float32)
+        cast_overflow = encodable & ~np.isfinite(encoded)
+        overflow |= cast_overflow
+        encoded[~encodable | cast_overflow] = np.nan
+        finite_values = values[encodable]
+        metadata = {
+            "product": str(product),
+            "physical_unit": str(unit),
+            "stored_multiplier": 1.0,
+            "decode_multiplier": 1.0,
+            "add_offset": 0.0,
+            "nodata": np.nan,
+            "encoding_version": "GETPAK-ENC-2",
+            "encoding_profile": "custom-float32",
+            "dtype": "float32",
+            "raster_scale": 1.0,
+            "resolution": None,
+            "maximum_physical_value": None,
+            "invalid_policy": "non-finite values map to NaN no-data",
+            "overflow_policy": "nonrepresentable Float32 values map to NaN no-data",
+            "invalid_count": int((~finite).sum()),
+            "overflow_count": int(overflow.sum()),
+            "nonrepresentable_count": int(overflow.sum()),
+            "valid_zero_count": int((encodable & (values == 0)).sum()),
+            "finite_physical_min": float(np.min(finite_values)) if finite_values.size else None,
+            "finite_physical_max": float(np.max(finite_values)) if finite_values.size else None,
+        }
+        return (encoded, metadata) if return_metadata else encoded
+
+    @staticmethod
     def to_uint8_categorical(arr, nodata=255, product='OWT', unit='class',
                              class_description=None, return_metadata=False):
         """Encode categorical classes without treating class zero as no-data."""
